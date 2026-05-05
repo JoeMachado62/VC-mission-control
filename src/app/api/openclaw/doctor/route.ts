@@ -61,6 +61,24 @@ export async function POST(request: Request) {
   try {
     const progress: Array<{ step: string; detail: string }> = []
 
+    const preFix = await runOpenClaw(['doctor'], { timeoutMs: 15000 })
+    const preStatus = parseOpenClawDoctorOutput(`${preFix.stdout}\n${preFix.stderr}`, preFix.code ?? 0, {
+      stateDir: config.openclawStateDir,
+    })
+
+    if (!preStatus.canFix) {
+      return NextResponse.json({
+        success: true,
+        progress: [
+          {
+            step: 'doctor',
+            detail: 'No actionable DoctorFix items were detected. Remaining notes require optional runtime setup or are informational only.',
+          },
+        ],
+        status: preStatus,
+      })
+    }
+
     const fixResult = await runOpenClaw(['doctor', '--fix'], { timeoutMs: 120000 })
     progress.push({ step: 'doctor', detail: 'Applied OpenClaw doctor config fixes.' })
 

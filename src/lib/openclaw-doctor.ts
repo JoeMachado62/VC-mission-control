@@ -17,6 +17,7 @@ function normalizeLine(line: string): string {
   return line
     .replace(/\u001b\[[0-9;]*m/g, '')
     .replace(/^[\s│┃║┆┊╎╏]+/, '')
+    .replace(/[\s│┃║┆┊╎╏]+$/, '')
     .trim()
 }
 
@@ -28,6 +29,7 @@ function isPositiveOrInstructionalLine(line: string): boolean {
   return /^no .* warnings? detected/i.test(line) ||
     /^no issues/i.test(line) ||
     /^run:\s/i.test(line) ||
+    /^fix:\s/i.test(line) ||
     /^all .* (healthy|ok|valid|passed)/i.test(line)
 }
 
@@ -37,6 +39,15 @@ function isDecorativeLine(line: string): boolean {
 
 function isStateDirectoryListLine(line: string): boolean {
   return /^(?:\$OPENCLAW_HOME(?:\/\.openclaw)?|~\/\.openclaw|\/\S+)$/.test(line)
+}
+
+function isOptionalDoctorIssue(line: string): boolean {
+  return /^binary: command "claude" was not found on path\./i.test(line) ||
+    /^headless claude auth: ok\b/i.test(line) ||
+    /^openclaw auth profile: missing \(anthropic:claude-cli\)/i.test(line) ||
+    /^workspace: .* \(writable\)\.?$/i.test(line) ||
+    /^claude project dir:/i.test(line) ||
+    /^oauth dir not present .*skipping create\b/i.test(line)
 }
 
 function normalizeFsPath(candidate: string): string {
@@ -134,22 +145,27 @@ export function parseOpenClawDoctorOutput(
     .map(normalizeLine)
     .filter(Boolean)
 
-  const issues = lines
+  const allIssues = lines
     .filter(line => /^[-*]\s+/.test(line))
     .map(line => line.replace(/^[-*]\s+/, '').trim())
     .filter(line => !isSessionAgingLine(line) && !isStateDirectoryListLine(line) && !isPositiveOrInstructionalLine(line))
 
+  const issues = allIssues.filter(line => !isOptionalDoctorIssue(line))
+
   // Strip positive/negated phrases before checking for warning keywords
-  const rawForWarningCheck = raw.replace(/\bno\s+\w+\s+(?:security\s+)?warnings?\s+detected\b/gi, '')
+  const actionableRaw = issues.join('\n')
+  const rawForWarningCheck = actionableRaw.replace(/\bno\s+\w+\s+(?:security\s+)?warnings?\s+detected\b/gi, '')
   const mentionsWarnings = /\bwarning|warnings|problem|problems|invalid config|fix\b/i.test(rawForWarningCheck)
   const mentionsHealthy = /\bok\b|\bhealthy\b|\bno issues\b|\bno\b.*\bwarnings?\s+detected\b|\bvalid\b/i.test(raw)
 
   let level: OpenClawDoctorLevel = 'healthy'
-  if (exitCode !== 0 || /invalid config|failed|error/i.test(raw)) {
+  if (exitCode !== 0 || /invalid config|failed|error/i.test(actionableRaw)) {
     level = 'error'
   } else if (issues.length > 0 || mentionsWarnings) {
     level = 'warning'
-  } else if (!mentionsHealthy && lines.length > 0) {
+  } else if (issues.length === 0) {
+    level = 'healthy'
+  } else if (!mentionsHealthy && actionableRaw.length > 0) {
     level = 'warning'
   }
 
@@ -161,13 +177,15 @@ export function parseOpenClawDoctorOutput(
       : issues[0] ||
         lines.find(line =>
           !/^run:/i.test(line) &&
+          !/^fix:/i.test(line) &&
           !/^file:/i.test(line) &&
           !isSessionAgingLine(line) &&
+          !isOptionalDoctorIssue(line) &&
           !isDecorativeLine(line)
         ) ||
         'OpenClaw doctor reported configuration issues.'
 
-  const canFix = level !== 'healthy' || /openclaw doctor --fix/i.test(raw)
+  const canFix = issues.length > 0 && /openclaw doctor --fix/i.test(raw)
 
   return {
     level,

@@ -146,4 +146,36 @@ Run "openclaw doctor --fix" to apply changes.
       'Channel "public" has no auth configured.',
     ])
   })
+
+  it('treats optional claude-cli checks as informational, not fixable health errors', () => {
+    const result = parseOpenClawDoctorOutput(`
+┌  OpenClaw doctor
+[agents/auth-profiles] synced openai-codex credentials from external cli
+│
+◇  Claude CLI
+│  - Binary: command "claude" was not found on PATH.
+│  - Headless Claude auth: OK (oauth).
+│  - OpenClaw auth profile: missing (anthropic:claude-cli) in
+│    /root/.openclaw/agents/main/agent/auth-profiles.json.
+│  - Workspace: ~/.openclaw/workspace (writable).
+│  - Claude project dir: ~/.claude/projects/-root--openclaw-workspace
+│    (not created yet; it appears after the first Claude CLI turn in this
+│    workspace).
+│  - Fix: install Claude CLI or set
+│    agents.defaults.cliBackends.claude-cli.command to the real binary
+│    path.
+│  - Fix: run openclaw models auth login --provider anthropic --method
+│    cli --set-default.
+│
+◇  State integrity
+│  - OAuth dir not present (~/.openclaw/credentials). Skipping create
+│    because no WhatsApp/pairing channel config is active.
+Run "openclaw doctor --fix" to apply changes.
+`, 0)
+
+    expect(result.issues).toEqual([])
+    expect(result.healthy).toBe(true)
+    expect(result.level).toBe('healthy')
+    expect(result.canFix).toBe(false)
+  })
 })

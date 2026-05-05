@@ -1,4 +1,6 @@
 import { runOpenClaw } from './command'
+import { config } from './config'
+import { getDetectedGatewayToken } from './gateway-runtime'
 
 export function parseGatewayJsonOutput(raw: string): unknown | null {
   const trimmed = String(raw || '').trim()
@@ -42,18 +44,38 @@ export async function callOpenClawGateway<T = unknown>(
   params: unknown,
   timeoutMs = 10000,
 ): Promise<T> {
+  const isLoopbackHost = /^(127\.0\.0\.1|localhost|::1)$/i.test(config.gatewayHost)
+  const gatewayUrl = isLoopbackHost
+    ? undefined
+    : `ws://${config.gatewayHost}:${config.gatewayPort}`
+  const gatewayToken = getDetectedGatewayToken()
+
+  const args = [
+    'gateway',
+    'call',
+    method,
+    '--timeout',
+    String(Math.max(1000, Math.floor(timeoutMs))),
+    '--params',
+    JSON.stringify(params ?? {}),
+    '--json',
+  ]
+
+  if (gatewayUrl) {
+    args.push('--url', gatewayUrl)
+  }
+  if (gatewayToken) {
+    args.push('--token', gatewayToken)
+  }
+
   const result = await runOpenClaw(
-    [
-      'gateway',
-      'call',
-      method,
-      '--timeout',
-      String(Math.max(1000, Math.floor(timeoutMs))),
-      '--params',
-      JSON.stringify(params ?? {}),
-      '--json',
-    ],
-    { timeoutMs: timeoutMs + 2000 },
+    args,
+    {
+      timeoutMs: timeoutMs + 2000,
+      env: gatewayUrl
+        ? { ...process.env, OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: '1' }
+        : undefined,
+    },
   )
 
   const payload = parseGatewayJsonOutput(result.stdout)
