@@ -72,6 +72,7 @@ const lastSeqRef: { current: number | null } = { current: null }
 const tokenOnlyFallbackRef: { current: boolean } = { current: false }
 const tokenOnlyFallbackTriedRef: { current: boolean } = { current: false }
 const wsPathFallbackTriedRef: { current: Set<string> } = { current: new Set() }
+const pairingApprovalTriedRef: { current: Set<string> } = { current: new Set() }
 
 export function useWebSocket() {
   const maxReconnectAttempts = 10
@@ -211,6 +212,38 @@ export function useWebSocket() {
       setConnection({ latency: rtt })
     }
   }, [setConnection])
+
+  const tryApproveControlUiPairing = useCallback(async (requestId?: string) => {
+    const approvalKey = requestId || '__latest_control_ui__'
+    if (pairingApprovalTriedRef.current.has(approvalKey)) return false
+    pairingApprovalTriedRef.current.add(approvalKey)
+
+    try {
+      const listRes = await fetch('/api/nodes?action=devices', {
+        method: 'GET',
+        credentials: 'same-origin',
+      })
+      if (!listRes.ok) return false
+
+      const listData = await listRes.json()
+      const pending = Array.isArray(listData.pending) ? listData.pending : []
+      const match = pending.find((device: any) => device.requestId === requestId)
+        || pending.find((device: any) => device.clientId === DEFAULT_GATEWAY_CLIENT_ID)
+        || pending.find((device: any) => device.clientMode === 'ui')
+      if (!match?.requestId) return false
+
+      const approveRes = await fetch('/api/nodes', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve', requestId: match.requestId }),
+      })
+      return approveRes.ok
+    } catch (err) {
+      log.warn('Control UI pairing auto-approval failed:', err)
+      return false
+    }
+  }, [])
 
   // Send the connect handshake (async for Ed25519 device identity signing)
   const sendConnectHandshake = useCallback(async (ws: WebSocket, nonce?: string) => {
@@ -415,6 +448,29 @@ export function useWebSocket() {
     if (frame.type === 'res' && !frame.ok) {
       log.error(`Gateway error: ${frame.error?.message || JSON.stringify(frame.error)}`)
       const rawMessage = frame.error?.message || JSON.stringify(frame.error)
+      if (rawMessage.toLowerCase().includes('pairing required')) {
+        const pendingRequestId =
+          typeof frame.error?.details?.requestId === 'string'
+            ? frame.error.details.requestId
+            : undefined
+
+        void (async () => {
+          const approved = await tryApproveControlUiPairing(pendingRequestId)
+          if (!approved) return
+
+          addLog({
+            id: `gateway-pairing-approved-${Date.now()}`,
+            timestamp: Date.now(),
+            level: 'info',
+            source: 'gateway',
+            message: 'Approved pending Control UI device pairing. Reconnecting to the gateway...',
+          })
+          stopHeartbeat()
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close(4003, 'Approved pending Control UI pairing')
+          }
+        })()
+      }
       const help = getGatewayErrorHelp(rawMessage)
       const shouldFallbackToTokenOnly = shouldRetryWithoutDeviceIdentity(
         rawMessage,
@@ -644,6 +700,7 @@ export function useWebSocket() {
     addNotification,
     updateAgent,
     stopHeartbeat,
+    tryApproveControlUiPairing,
     isNonRetryableGatewayError,
     getGatewayErrorHelp,
     addExecApproval,
@@ -697,6 +754,7 @@ export function useWebSocket() {
     manualDisconnectRef.current = false
     nonRetryableErrorRef.current = null
     lastSeqRef.current = null
+    pairingApprovalTriedRef.current.clear()
 
     try {
       const ws = new WebSocket(normalizedUrl)

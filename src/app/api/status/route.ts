@@ -376,6 +376,7 @@ async function getSystemStatus(workspaceId: number) {
 async function getGatewayStatus() {
   const gatewayStatus: any = {
     running: false,
+    process_running: false,
     port: config.gatewayPort,
     pid: null,
     uptime: 0,
@@ -392,7 +393,7 @@ async function getGatewayStatus() {
       .find((line) => /clawdbot-gateway|openclaw-gateway|openclaw.*gateway/i.test(line))
     if (match) {
       const parts = match.trim().split(/\s+/)
-      gatewayStatus.running = true
+      gatewayStatus.process_running = true
       gatewayStatus.pid = parts[0]
     }
   } catch (error) {
@@ -404,6 +405,11 @@ async function getGatewayStatus() {
   } catch (error) {
     logger.error({ err: error }, 'Error checking port')
   }
+
+  // In sidecar/container deployments the gateway process is not visible in the
+  // Mission Control container's process table, so a reachable configured port
+  // is the reliable signal that the gateway is available.
+  gatewayStatus.running = gatewayStatus.process_running || gatewayStatus.port_listening === true
 
   try {
     const { stdout } = await runOpenClaw(['--version'], { timeoutMs: 3000 })

@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { config } from '@/lib/config'
 import { logger } from '@/lib/logger'
+import {
+  approveLocalDevicePairing,
+  listLocalDevicePairing,
+  rejectLocalDevicePairing,
+} from '@/lib/openclaw-device-pairing'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 
 const GATEWAY_TIMEOUT = 5000
@@ -21,6 +26,21 @@ async function isGatewayReachable(): Promise<boolean> {
   } finally {
     clearTimeout(timeout)
   }
+}
+
+function shouldUseLocalPairingFallback(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : JSON.stringify(error)
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('missing scope: operator.pairing') ||
+    normalized.includes('pairing required') ||
+    normalized.includes('not paired')
+  )
 }
 
 export async function GET(request: NextRequest) {
@@ -53,6 +73,11 @@ export async function GET(request: NextRequest) {
 
   if (action === 'devices') {
     try {
+      const local = await listLocalDevicePairing()
+      if (local) {
+        return NextResponse.json(local)
+      }
+
       const connected = await isGatewayReachable()
       if (!connected) {
         return NextResponse.json({ devices: [] })
@@ -66,6 +91,12 @@ export async function GET(request: NextRequest) {
         )
         return NextResponse.json({ devices: data?.devices ?? [] })
       } catch (rpcErr) {
+        if (shouldUseLocalPairingFallback(rpcErr)) {
+          const local = await listLocalDevicePairing()
+          if (local) {
+            return NextResponse.json(local)
+          }
+        }
         logger.warn({ err: rpcErr }, 'device.pair.list RPC failed, returning empty device list')
         return NextResponse.json({ devices: [] })
       }
@@ -130,9 +161,44 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    if (spec.paramKey === 'requestId') {
+      if (action === 'approve') {
+        const result = await approveLocalDevicePairing(id)
+        if (result?.status === 'approved') {
+          return NextResponse.json(result)
+        }
+        if (result?.status === 'forbidden') {
+          return NextResponse.json({ error: result.message }, { status: 403 })
+        }
+      }
+      if (action === 'reject') {
+        const result = await rejectLocalDevicePairing(id)
+        if (result) {
+          return NextResponse.json(result)
+        }
+      }
+    }
+
     const result = await callOpenClawGateway(spec.method, params, GATEWAY_TIMEOUT)
     return NextResponse.json(result)
   } catch (err: unknown) {
+    if (shouldUseLocalPairingFallback(err) && spec.paramKey === 'requestId') {
+      if (action === 'approve') {
+        const result = await approveLocalDevicePairing(id)
+        if (result?.status === 'approved') {
+          return NextResponse.json(result)
+        }
+        if (result?.status === 'forbidden') {
+          return NextResponse.json({ error: result.message }, { status: 403 })
+        }
+      }
+      if (action === 'reject') {
+        const result = await rejectLocalDevicePairing(id)
+        if (result) {
+          return NextResponse.json(result)
+        }
+      }
+    }
     logger.error({ err }, 'Gateway device action failed')
     return NextResponse.json({ error: 'Gateway device action failed' }, { status: 502 })
   }
