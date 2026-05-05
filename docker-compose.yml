@@ -10,8 +10,11 @@ services:
       # host.docker.internal resolves to the Docker host on Docker Desktop (macOS/Windows).
       # On Linux, the extra_hosts entry below makes this work.
       # If your gateway runs in another container, set this to the container name instead.
-      - OPENCLAW_GATEWAY_HOST=${OPENCLAW_GATEWAY_HOST:-host.docker.internal}
+      - OPENCLAW_GATEWAY_HOST=${OPENCLAW_GATEWAY_HOST:-openclaw-gateway}
       - OPENCLAW_GATEWAY_PORT=${OPENCLAW_GATEWAY_PORT:-18789}
+      - OPENCLAW_STATE_DIR=${OPENCLAW_STATE_DIR:-/run/openclaw}
+      - NEXT_PUBLIC_GATEWAY_URL=${NEXT_PUBLIC_GATEWAY_URL:-}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
       # ── Browser-side gateway connection (user's browser → gateway) ──
       # NEXT_PUBLIC_GATEWAY_HOST must be reachable from the user's browser, NOT from
       # inside the container. For local Docker: leave empty (auto-detected from browser).
@@ -31,6 +34,7 @@ services:
         required: false
     volumes:
       - mc-data:/app/.data
+      - openclaw-state:/run/openclaw
       # Optional: mount your OpenClaw state directory read-only so Mission Control
       # can read agent configs and memory. Uncomment and adjust the host path:
       # - ${OPENCLAW_HOME:-~/.openclaw}:/run/openclaw:ro
@@ -59,6 +63,61 @@ services:
       - mc-net
     restart: unless-stopped
 
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-gateway
+    user: "1001:65534"
+    environment:
+      - HOME=/home/node
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+      - TERM=xterm-256color
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - openclaw-state:/home/node/.openclaw
+    command:
+      [
+        "node",
+        "dist/index.js",
+        "gateway",
+        "--bind",
+        "${OPENCLAW_GATEWAY_BIND:-lan}",
+        "--port",
+        "18789"
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - mc-net
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: mission-control-caddy
+    depends_on:
+      - mission-control
+      - openclaw-gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - mc-net
+    restart: unless-stopped
+
   # Standalone mode — no gateway required. Start with:
   #   docker compose --profile standalone up
   mission-control-standalone:
@@ -73,6 +132,9 @@ services:
 
 volumes:
   mc-data:
+  openclaw-state:
+  caddy-data:
+  caddy-config:
 
 networks:
   mc-net:

@@ -1,0 +1,9 @@
+virtualcarhub.cloud {
+  encode zstd gzip
+
+  handle_path /gw* {
+    reverse_proxy openclaw-gateway:18789
+  }
+
+  reverse_proxy mission-control:3000
+}

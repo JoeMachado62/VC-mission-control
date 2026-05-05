@@ -15,3 +15,7 @@ GET /api/gateways/control
 POST /api/gateways/control
 GET /api/mcp-audit/verify
 POST /api/hermes/events
+# Langfuse AgentOps MVP — TODO: add OpenAPI schemas once endpoint shape settles
+GET /api/tasks/{id}/observability/langfuse
+POST /api/tasks/{id}/observability/langfuse
+POST /api/tasks/{id}/observability/langfuse/refresh

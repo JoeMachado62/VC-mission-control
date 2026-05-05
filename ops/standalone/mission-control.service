@@ -1,0 +1,19 @@
+[Unit]
+Description=Mission Control Standalone
+After=network-online.target openclaw-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/openclaw-mission-control
+Environment=NODE_ENV=production
+Environment=HOSTNAME=0.0.0.0
+EnvironmentFile=/etc/mission-control/mission-control.env
+ExecStart=/bin/bash /root/openclaw-mission-control/scripts/start-standalone.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
