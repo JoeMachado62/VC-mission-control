@@ -15,6 +15,10 @@ import { MarkdownRenderer } from '@/components/markdown-renderer'
 import { Button } from '@/components/ui/button'
 import { ProjectManagerModal } from '@/components/modals/project-manager-modal'
 import { SessionMessage, shouldShowTimestamp, type SessionTranscriptMessage } from '@/components/chat/session-message'
+import { InspectTraceButton } from '@/components/tasks/inspect-trace-button'
+import { LangfuseTraceTab } from '@/components/tasks/langfuse-trace-tab'
+import { TraceHealthBadge } from '@/components/tasks/trace-health-badge'
+import type { TaskObservabilityPreview } from '@/lib/langfuse/types'
 
 const log = createClientLogger('TaskBoard')
 
@@ -47,6 +51,7 @@ interface Task {
   comment_count?: number
   error_message?: string
   dispatch_attempts?: number
+  observability?: TaskObservabilityPreview
 }
 
 interface Agent {
@@ -1045,6 +1050,7 @@ export function TaskBoardPanel() {
                               {t('colAwaitingOwner')}
                             </span>
                           )}
+                          <TraceHealthBadge health={task.observability?.traceHealth || 'no_trace'} compact />
                         </div>
                       </div>
                     </div>
@@ -1106,6 +1112,20 @@ export function TaskBoardPanel() {
                       {task.tags.length > 3 && (
                         <span className="text-muted-foreground/60 text-[10px]">+{task.tags.length - 3}</span>
                       )}
+                    </div>
+                  )}
+
+                  {task.status === 'failed' && (
+                    <div className="mt-2 ml-5.5 flex flex-wrap items-center gap-2 rounded-md border border-red-500/15 bg-red-500/5 p-2">
+                      <div className="min-w-0 flex-1 text-[11px] text-red-300/90">
+                        {task.observability?.failureReason || task.error_message || 'Task failed'}
+                      </div>
+                      <InspectTraceButton
+                        taskId={task.id}
+                        hasTrace={Boolean(task.observability?.hasTrace)}
+                        traceUrl={task.observability?.traceUrl}
+                        onInspect={() => setSelectedTask(task)}
+                      />
                     </div>
                   )}
 
@@ -1214,6 +1234,8 @@ function TaskDetailModal({
 }) {
   const t = useTranslations('taskBoard')
   const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const { currentUser } = useMissionControl()
   const commentAuthor = currentUser?.username || 'system'
   const resolvedProjectName =
@@ -1230,8 +1252,24 @@ function TaskDetailModal({
   const [reviewNotes, setReviewNotes] = useState('')
   const [reviewError, setReviewError] = useState<string | null>(null)
   const mentionTargets = useMentionTargets()
-  const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'session'>('details')
+  const taskTabFromUrl = searchParams.get('taskTab')
+  const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'session' | 'langfuse'>(
+    taskTabFromUrl === 'langfuse' ? 'langfuse' : 'details'
+  )
   const [reviewer, setReviewer] = useState('aegis')
+
+  useEffect(() => {
+    if (taskTabFromUrl === 'langfuse') setActiveTab('langfuse')
+  }, [taskTabFromUrl])
+
+  const selectTab = (tab: 'details' | 'comments' | 'quality' | 'session' | 'langfuse') => {
+    setActiveTab(tab)
+    const params = new URLSearchParams(searchParams.toString())
+    params.set('taskId', String(task.id))
+    if (tab === 'langfuse') params.set('taskTab', 'langfuse')
+    else params.delete('taskTab')
+    router.replace(`${pathname}?${params.toString()}`)
+  }
 
   const fetchReviews = useCallback(async () => {
     try {
@@ -1494,6 +1532,16 @@ function TaskDetailModal({
             {task.error_message && (
               <p className="text-xs text-red-400 font-mono whitespace-pre-wrap">{task.error_message}</p>
             )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <TraceHealthBadge health={task.observability?.traceHealth || 'no_trace'} />
+              <InspectTraceButton
+                taskId={task.id}
+                hasTrace={Boolean(task.observability?.hasTrace)}
+                traceUrl={task.observability?.traceUrl}
+                onInspect={() => setActiveTab('langfuse')}
+                size="sm"
+              />
+            </div>
             {task.dispatch_attempts != null && task.dispatch_attempts > 0 && (
               <p className="text-2xs text-muted-foreground">Dispatch attempts: {task.dispatch_attempts}</p>
             )}
@@ -1518,23 +1566,32 @@ function TaskDetailModal({
         {/* Content */}
         <div className="px-6 py-4">
           <div className="flex gap-1.5 mb-4" role="tablist" aria-label={t('taskDetailTabs')}>
-            {(['details', 'comments', 'quality'] as const).map(tab => (
+            {(['details', 'comments', 'quality', 'langfuse'] as const).map(tab => (
               <button
                 key={tab}
                 type="button"
                 role="tab"
                 aria-selected={activeTab === tab}
                 aria-controls={`tabpanel-${tab}`}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => selectTab(tab)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                   activeTab === tab
                     ? 'bg-secondary text-foreground'
                     : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
                 }`}
               >
-                {tab === 'details' ? t('tabDetails') : tab === 'comments' ? t('tabComments') : t('tabQualityReview')}
+                {tab === 'details'
+                  ? t('tabDetails')
+                  : tab === 'comments'
+                    ? t('tabComments')
+                    : tab === 'quality'
+                      ? t('tabQualityReview')
+                      : 'Langfuse Trace'}
                 {tab === 'comments' && comments.length > 0 && (
                   <span className="ml-1.5 text-[10px] text-muted-foreground/60">{comments.length}</span>
+                )}
+                {tab === 'langfuse' && task.observability?.hasTrace && (
+                  <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-cyan-400" />
                 )}
               </button>
             ))}
@@ -1544,7 +1601,7 @@ function TaskDetailModal({
                 role="tab"
                 aria-selected={activeTab === 'session'}
                 aria-controls="tabpanel-session"
-                onClick={() => setActiveTab('session')}
+                onClick={() => selectTab('session')}
                 className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors inline-flex items-center ${
                   activeTab === 'session'
                     ? 'bg-secondary text-foreground'
@@ -1657,7 +1714,7 @@ function TaskDetailModal({
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => setActiveTab('session')}
+                    onClick={() => selectTab('session')}
                     className="font-mono text-xs"
                   >
                     View Session {task.metadata.dispatch_session_id.slice(0, 8)}...
@@ -1798,6 +1855,12 @@ function TaskDetailModal({
                   </Button>
                 </div>
               </form>
+            </div>
+          )}
+
+          {activeTab === 'langfuse' && (
+            <div id="tabpanel-langfuse" role="tabpanel" aria-label="Langfuse Trace" className="mt-4">
+              <LangfuseTraceTab taskId={task.id} />
             </div>
           )}
 

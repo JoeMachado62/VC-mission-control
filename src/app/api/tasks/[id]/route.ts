@@ -10,18 +10,38 @@ import { normalizeTaskUpdateStatus } from '@/lib/task-status';
 import { syncTaskOutbound } from '@/lib/github-sync-engine';
 import { removeTaskFromGnap } from '@/lib/gnap-sync';
 import { config } from '@/lib/config';
+import type { TaskObservabilityPreview, TraceHealth } from '@/lib/langfuse/types';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
   return `${prefix}-${String(num).padStart(3, '0')}`
 }
 
-function mapTaskRow(task: any): Task & { tags: string[]; metadata: Record<string, unknown> } {
+function mapTaskRow(task: any): Task & { tags: string[]; metadata: Record<string, unknown>; observability: TaskObservabilityPreview } {
+  const {
+    observability_trace_id,
+    observability_trace_url,
+    observability_trace_health,
+    observability_failure_reason,
+    observability_cost_usd,
+    observability_latency_ms,
+    ...taskRow
+  } = task
+  const hasTrace = Boolean(observability_trace_id)
   return {
-    ...task,
-    tags: task.tags ? JSON.parse(task.tags) : [],
-    metadata: task.metadata ? JSON.parse(task.metadata) : {},
-    ticket_ref: formatTicketRef(task.project_prefix, task.project_ticket_no),
+    ...taskRow,
+    tags: taskRow.tags ? JSON.parse(taskRow.tags) : [],
+    metadata: taskRow.metadata ? JSON.parse(taskRow.metadata) : {},
+    ticket_ref: formatTicketRef(taskRow.project_prefix, taskRow.project_ticket_no),
+    observability: {
+      hasTrace,
+      traceHealth: (observability_trace_health || (hasTrace ? 'unknown' : 'no_trace')) as TraceHealth,
+      traceId: observability_trace_id,
+      traceUrl: observability_trace_url,
+      failureReason: observability_failure_reason,
+      costUsd: observability_cost_usd,
+      latencyMs: observability_latency_ms,
+    },
   }
 }
 
@@ -60,7 +80,13 @@ export async function GET(
     }
     
     const stmt = db.prepare(`
-      SELECT t.*, p.name as project_name, p.ticket_prefix as project_prefix
+      SELECT t.*, p.name as project_name, p.ticket_prefix as project_prefix,
+        (SELECT ol.langfuse_trace_id FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_trace_id,
+        (SELECT ol.langfuse_url FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_trace_url,
+        (SELECT ol.trace_health FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_trace_health,
+        (SELECT ol.failure_reason FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_failure_reason,
+        (SELECT ol.trace_cost_usd FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_cost_usd,
+        (SELECT ol.trace_latency_ms FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_latency_ms
       FROM tasks t
       LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
       WHERE t.id = ? AND t.workspace_id = ?
@@ -384,7 +410,13 @@ export async function PUT(
     
     // Fetch updated task
     const updatedTask = db.prepare(`
-      SELECT t.*, p.name as project_name, p.ticket_prefix as project_prefix
+      SELECT t.*, p.name as project_name, p.ticket_prefix as project_prefix,
+        (SELECT ol.langfuse_trace_id FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_trace_id,
+        (SELECT ol.langfuse_url FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_trace_url,
+        (SELECT ol.trace_health FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_trace_health,
+        (SELECT ol.failure_reason FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_failure_reason,
+        (SELECT ol.trace_cost_usd FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_cost_usd,
+        (SELECT ol.trace_latency_ms FROM observability_links ol WHERE ol.task_id = t.id AND ol.workspace_id = t.workspace_id AND ol.provider = 'langfuse' ORDER BY ol.updated_at DESC LIMIT 1) as observability_latency_ms
       FROM tasks t
       LEFT JOIN projects p ON p.id = t.project_id AND p.workspace_id = t.workspace_id
       WHERE t.id = ? AND t.workspace_id = ?

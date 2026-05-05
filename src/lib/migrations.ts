@@ -1428,6 +1428,43 @@ const migrations: Migration[] = [
       db.exec(`ALTER TABLE mcp_call_log ADD COLUMN signature TEXT DEFAULT NULL`)
       db.exec(`ALTER TABLE mcp_call_log ADD COLUMN public_key TEXT DEFAULT NULL`)
     }
+  },
+  {
+    id: '051_observability_links',
+    up(db: Database.Database) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS observability_links (
+          id TEXT PRIMARY KEY,
+          task_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL DEFAULT 1,
+          agent_id TEXT,
+          workflow_run_id TEXT,
+          provider TEXT NOT NULL DEFAULT 'langfuse',
+          langfuse_trace_id TEXT NOT NULL,
+          langfuse_session_id TEXT,
+          langfuse_project_id TEXT,
+          langfuse_url TEXT,
+          trace_status TEXT,
+          trace_health TEXT,
+          trace_score REAL,
+          trace_cost_usd REAL,
+          trace_latency_ms INTEGER,
+          prompt_name TEXT,
+          prompt_version TEXT,
+          model_provider TEXT,
+          model_name TEXT,
+          failure_reason TEXT,
+          metadata_json TEXT DEFAULT '{}',
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(workspace_id, task_id, provider),
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_observability_links_task ON observability_links(workspace_id, task_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_observability_links_trace ON observability_links(provider, langfuse_trace_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_observability_links_health ON observability_links(trace_health)`)
+    }
   }
 ]
 
