@@ -5,22 +5,24 @@ import { Button } from '@/components/ui/button'
 
 interface RuntimeSetupModalProps {
   runtime: 'openclaw' | 'hermes' | 'claude' | 'codex'
+  isDocker?: boolean
   onClose: () => void
   onComplete: () => void
 }
 
-export function RuntimeSetupModal({ runtime, onClose, onComplete }: RuntimeSetupModalProps) {
-  const SetupComponent = {
-    openclaw: OpenClawSetup,
-    hermes: HermesSetup,
-    claude: ClaudeSetup,
-    codex: CodexSetup,
-  }[runtime]
-
+export function RuntimeSetupModal({ runtime, isDocker = false, onClose, onComplete }: RuntimeSetupModalProps) {
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className="bg-card border border-border rounded-xl max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl shadow-black/30">
-        <SetupComponent onClose={onClose} onComplete={onComplete} />
+        {runtime === 'openclaw' ? (
+          <OpenClawSetup onClose={onClose} onComplete={onComplete} isDocker={isDocker} />
+        ) : runtime === 'hermes' ? (
+          <HermesSetup onClose={onClose} onComplete={onComplete} />
+        ) : runtime === 'claude' ? (
+          <ClaudeSetup onClose={onClose} onComplete={onComplete} />
+        ) : (
+          <CodexSetup onClose={onClose} onComplete={onComplete} />
+        )}
       </div>
     </div>
   )
@@ -28,25 +30,65 @@ export function RuntimeSetupModal({ runtime, onClose, onComplete }: RuntimeSetup
 
 // ─── OpenClaw Setup ──────────────────────────────────────────────────────
 
-function OpenClawSetup({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
+function OpenClawSetup({ onClose, onComplete, isDocker = false }: { onClose: () => void; onComplete: () => void; isDocker?: boolean }) {
   const [step, setStep] = useState<'onboard' | 'verify' | 'done'>('onboard')
   const [running, setRunning] = useState(false)
   const [output, setOutput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [healthStatus, setHealthStatus] = useState<any>(null)
+  const [missingRuntime, setMissingRuntime] = useState(false)
+
+  const copySidecarYaml = useCallback(async () => {
+    try {
+      const res = await fetch('/api/agent-runtimes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'docker-compose', runtime: 'openclaw' }),
+      })
+      if (!res.ok) throw new Error('Failed to generate sidecar YAML')
+      const data = await res.json()
+      await navigator.clipboard.writeText(data.yaml)
+      setOutput('OpenClaw sidecar YAML copied to clipboard.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to copy sidecar YAML')
+    }
+  }, [])
+
+  const checkDockerGatewayHealth = useCallback(async (): Promise<boolean> => {
+    const res = await fetch('/api/status?action=health', { cache: 'no-store' })
+    if (!res.ok) throw new Error('Failed to read Mission Control health status')
+    const data = await res.json()
+    const gatewayCheck = Array.isArray(data?.checks)
+      ? data.checks.find((check: any) => check?.name === 'Gateway')
+      : null
+
+    const healthy = gatewayCheck?.status === 'healthy'
+    setHealthStatus({
+      healthy,
+      mode: 'docker-sidecar',
+      issues: healthy ? [] : [gatewayCheck?.message || 'Gateway is not reachable yet'],
+    })
+    return healthy
+  }, [])
 
   const runOnboard = useCallback(async () => {
     setRunning(true)
     setError(null)
     setOutput('')
+    setMissingRuntime(false)
     try {
-      const res = await fetch('/api/agent-runtimes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'install', runtime: 'openclaw', mode: 'local' }),
-      })
-      // The onboard command runs as part of post-install in agent-runtimes.ts
-      // Let's use the doctor endpoint to check health instead
+      if (isDocker) {
+        const healthy = await checkDockerGatewayHealth()
+        if (healthy) {
+          setOutput('OpenClaw gateway is reachable through the Docker sidecar.')
+          setStep('done')
+        } else {
+          setOutput('OpenClaw gateway is not reachable yet. Start the sidecar or reconnect the external gateway, then run this check again.')
+          setStep('verify')
+        }
+        return
+      }
+
       const doctorRes = await fetch('/api/openclaw/doctor')
       if (doctorRes.ok) {
         const data = await doctorRes.json()
@@ -58,6 +100,11 @@ function OpenClawSetup({ onClose, onComplete }: { onClose: () => void; onComplet
           setOutput(data.issues?.join('\n') || 'Some issues detected')
         }
       } else {
+        const data = await doctorRes.json().catch(() => ({}))
+        const detail = data.error || 'OpenClaw is not installed or not reachable'
+        setMissingRuntime(/not installed|not reachable/i.test(detail))
+        setHealthStatus(null)
+        setOutput(detail)
         setStep('verify')
       }
     } catch (err) {
@@ -65,7 +112,7 @@ function OpenClawSetup({ onClose, onComplete }: { onClose: () => void; onComplet
     } finally {
       setRunning(false)
     }
-  }, [])
+  }, [checkDockerGatewayHealth, isDocker])
 
   const runDoctorFix = useCallback(async () => {
     setRunning(true)
@@ -90,6 +137,12 @@ function OpenClawSetup({ onClose, onComplete }: { onClose: () => void; onComplet
 
   const checkHealth = useCallback(async () => {
     try {
+      if (isDocker) {
+        const healthy = await checkDockerGatewayHealth()
+        if (healthy) setStep('done')
+        return
+      }
+
       const res = await fetch('/api/openclaw/doctor')
       if (res.ok) {
         const data = await res.json()
@@ -99,7 +152,7 @@ function OpenClawSetup({ onClose, onComplete }: { onClose: () => void; onComplet
     } catch {
       // ignore
     }
-  }, [])
+  }, [checkDockerGatewayHealth, isDocker])
 
   useEffect(() => { checkHealth() }, [checkHealth])
 
@@ -145,6 +198,12 @@ function OpenClawSetup({ onClose, onComplete }: { onClose: () => void; onComplet
             </div>
           </div>
 
+          {isDocker && (
+            <div className="p-3 rounded-lg border border-void-cyan/20 bg-void-cyan/5 text-xs text-muted-foreground">
+              Mission Control is running in Docker. The recommended path is to run OpenClaw as a sidecar or connect an external gateway, then use this health check to verify reachability.
+            </div>
+          )}
+
           {error && <p className="text-xs text-red-400">{error}</p>}
 
           {healthStatus?.healthy && (
@@ -165,20 +224,31 @@ function OpenClawSetup({ onClose, onComplete }: { onClose: () => void; onComplet
       {step === 'verify' && (
         <div className="space-y-4">
           <div className="p-4 rounded-lg border border-amber-500/20 bg-amber-500/5 space-y-2">
-            <p className="text-sm font-medium text-amber-400">Issues Detected</p>
+            <p className="text-sm font-medium text-amber-400">{missingRuntime ? 'OpenClaw Not Reachable Yet' : 'Issues Detected'}</p>
             {healthStatus?.issues?.map((issue: string, i: number) => (
               <p key={i} className="text-xs text-muted-foreground">- {issue}</p>
             ))}
             {output && <pre className="text-xs text-muted-foreground/70 whitespace-pre-wrap mt-2">{output}</pre>}
           </div>
 
+          {missingRuntime && isDocker && (
+            <div className="p-3 rounded-lg border border-border/30 bg-secondary/20 text-xs text-muted-foreground space-y-2">
+              <p>Use the OpenClaw sidecar on the same Docker network or connect an external gateway, then run this health check again.</p>
+              <p>The local in-container installer is intentionally disabled for Mission Control Docker deployments.</p>
+            </div>
+          )}
+
           {error && <p className="text-xs text-red-400">{error}</p>}
 
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={onClose}>Skip for now</Button>
-            <Button size="sm" onClick={runDoctorFix} disabled={running}>
-              {running ? 'Fixing...' : 'Auto-Fix Issues'}
-            </Button>
+            {missingRuntime && isDocker ? (
+              <Button size="sm" onClick={copySidecarYaml}>Copy Sidecar YAML</Button>
+            ) : (
+              <Button size="sm" onClick={runDoctorFix} disabled={running}>
+                {running ? 'Fixing...' : 'Auto-Fix Issues'}
+              </Button>
+            )}
           </div>
         </div>
       )}

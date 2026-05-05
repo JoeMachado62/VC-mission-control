@@ -39,11 +39,21 @@ export async function POST(request: NextRequest) {
   if (action === 'install') {
     const runtime = body.runtime as RuntimeId
     const mode = (body.mode || 'local') as DeploymentMode
+    const isDocker = existsSync('/.dockerenv')
     if (!runtime || !VALID_RUNTIMES.has(runtime)) {
       return NextResponse.json({ error: 'Invalid runtime. Use: openclaw, hermes' }, { status: 400 })
     }
     if (!VALID_MODES.has(mode)) {
       return NextResponse.json({ error: 'Invalid mode. Use: local, docker' }, { status: 400 })
+    }
+    if (runtime === 'openclaw' && mode === 'local' && isDocker) {
+      return NextResponse.json(
+        {
+          error:
+            'OpenClaw should not be installed inside the Mission Control Docker container. Use the Sidecar YAML option or connect an external gateway instead.',
+        },
+        { status: 400 }
+      )
     }
 
     logger.info({ runtime, mode, actor: auth.user.username }, 'Starting agent runtime install')

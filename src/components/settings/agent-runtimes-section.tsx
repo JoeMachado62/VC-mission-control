@@ -95,7 +95,8 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
         body: JSON.stringify({ action: 'install', runtime: runtimeId, mode: 'local' }),
       })
       if (!res.ok) {
-        showFeedback(false, 'Failed to start install')
+        const data = await res.json().catch(() => ({}))
+        showFeedback(false, data.error || 'Failed to start install')
         return
       }
       const data = await res.json()
@@ -156,7 +157,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
 
       {isDocker && (
         <div className="mb-3 p-2 rounded border border-void-cyan/20 bg-void-cyan/5 text-xs text-muted-foreground">
-          Running in Docker — install directly or use sidecar services for production.
+          Running in Docker — OpenClaw should be deployed as a sidecar or external gateway, not installed inside the Mission Control container.
         </div>
       )}
 
@@ -241,8 +242,15 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
                         <Button variant="ghost" size="sm" onClick={() => handleDetect(rt.id)} className="text-2xs h-6 px-2">Refresh</Button>
                         {!rt.installed && !justInstalled && (
                           <>
-                            <Button variant="ghost" size="sm" onClick={() => handleInstall(rt.id)} className="text-2xs h-6 px-2">Install</Button>
-                            {isDocker && (
+                            {isDocker && rt.id === 'openclaw' ? (
+                              <>
+                                <Button variant="ghost" size="sm" onClick={() => setSetupRuntime('openclaw')} className="text-2xs h-6 px-2">Setup</Button>
+                                <Button variant="ghost" size="sm" onClick={() => handleCopyCompose(rt.id)} className="text-2xs h-6 px-2">Sidecar YAML</Button>
+                              </>
+                            ) : (
+                              <Button variant="ghost" size="sm" onClick={() => handleInstall(rt.id)} className="text-2xs h-6 px-2">Install</Button>
+                            )}
+                            {isDocker && rt.id !== 'openclaw' && (
                               <Button variant="ghost" size="sm" onClick={() => handleCopyCompose(rt.id)} className="text-2xs h-6 px-2">Sidecar YAML</Button>
                             )}
                           </>
@@ -270,7 +278,14 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
                     {installFailed && (
                       <div className="mt-2 space-y-1">
                         <p className="text-2xs text-red-400">Install failed: {job?.error || 'Unknown error'}</p>
-                        <Button variant="ghost" size="sm" onClick={() => handleInstall(rt.id)} className="text-2xs h-6 px-2">Retry</Button>
+                        {isDocker && rt.id === 'openclaw' ? (
+                          <div className="flex items-center gap-1.5">
+                            <Button variant="ghost" size="sm" onClick={() => setSetupRuntime('openclaw')} className="text-2xs h-6 px-2">Open Setup</Button>
+                            <Button variant="ghost" size="sm" onClick={() => handleCopyCompose(rt.id)} className="text-2xs h-6 px-2">Sidecar YAML</Button>
+                          </div>
+                        ) : (
+                          <Button variant="ghost" size="sm" onClick={() => handleInstall(rt.id)} className="text-2xs h-6 px-2">Retry</Button>
+                        )}
                       </div>
                     )}
 
@@ -303,6 +318,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
       {setupRuntime && (
         <RuntimeSetupModal
           runtime={setupRuntime}
+          isDocker={isDocker}
           onClose={() => setSetupRuntime(null)}
           onComplete={() => {
             setSetupRuntime(null)

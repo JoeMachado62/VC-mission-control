@@ -17,6 +17,11 @@ interface ScriptReviewResult {
   detail: string
 }
 
+const OPENCLAW_INSTALLER_URLS = [
+  'https://openclaw.ai/install.sh',
+  'https://get.openclaw.dev',
+]
+
 /**
  * Download installer script to a secure temp dir, run regex-based injection
  * scan, and optionally request an AI security review via the Claude API.
@@ -578,8 +583,13 @@ async function installOpenClawLocal(job: InstallJob): Promise<void> {
     CI: '1',
   }
   try {
-    // Download, review, then execute from secure temp dir
-    const reviewed = await downloadAndReviewScript('https://get.openclaw.dev', job, env)
+    let reviewed: { scriptPath: string; tempDir: string } | null = null
+    for (const installerUrl of OPENCLAW_INSTALLER_URLS) {
+      // Download, review, then execute from secure temp dir
+      reviewed = await downloadAndReviewScript(installerUrl, job, env)
+      if (reviewed) break
+      job.output += `> Installer unavailable at ${installerUrl}; trying next source if available.\n`
+    }
     if (!reviewed) {
       job.status = 'failed'
       job.error = 'Installer download or security review failed'
