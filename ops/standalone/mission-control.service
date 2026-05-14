@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/root/openclaw-mission-control
 Environment=NODE_ENV=production
-Environment=HOSTNAME=0.0.0.0
+Environment=HOSTNAME=127.0.0.1
 EnvironmentFile=/etc/mission-control/mission-control.env
 ExecStart=/bin/bash /root/openclaw-mission-control/scripts/start-standalone.sh
 Restart=always

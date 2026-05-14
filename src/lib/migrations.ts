@@ -1465,6 +1465,111 @@ const migrations: Migration[] = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_observability_links_trace ON observability_links(provider, langfuse_trace_id)`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_observability_links_health ON observability_links(trace_health)`)
     }
+  },
+  {
+    id: '052_v4_vch_fields',
+    up(db: Database.Database) {
+      // ─── New tables ─────────────────────────────────────────────────
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS orchestration_events (
+          id          TEXT PRIMARY KEY,
+          event_type  TEXT NOT NULL,
+          deal_id     TEXT,
+          agent_id    TEXT,
+          task_id     TEXT,
+          payload     TEXT NOT NULL DEFAULT '{}',
+          created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_orchestration_events_deal ON orchestration_events(deal_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_orchestration_events_type_created ON orchestration_events(event_type, created_at)`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_heartbeats (
+          id           TEXT PRIMARY KEY,
+          agent_id     TEXT NOT NULL,
+          status       TEXT NOT NULL,
+          current_task TEXT,
+          metrics      TEXT,
+          received_at  INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_heartbeats_agent_received ON agent_heartbeats(agent_id, received_at)`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS webhook_events (
+          id           TEXT PRIMARY KEY,
+          source       TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          payload      TEXT NOT NULL DEFAULT '{}',
+          processed    INTEGER NOT NULL DEFAULT 0,
+          received_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+          UNIQUE(source, payload_hash)
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_webhook_events_received ON webhook_events(received_at)`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS admin_allowlist (
+          id           TEXT PRIMARY KEY,
+          channel      TEXT NOT NULL,
+          identifier   TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          pin_hash     TEXT,
+          active       INTEGER NOT NULL DEFAULT 1,
+          UNIQUE(channel, identifier)
+        )
+      `)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS widget_sessions (
+          id          TEXT PRIMARY KEY,
+          visitor_id  TEXT NOT NULL,
+          contact_id  TEXT,
+          page_source TEXT NOT NULL,
+          vehicle_id  TEXT,
+          deal_id     TEXT,
+          jwt_jti     TEXT NOT NULL UNIQUE,
+          issued_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+          expires_at  INTEGER NOT NULL,
+          revoked     INTEGER NOT NULL DEFAULT 0
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_widget_sessions_visitor ON widget_sessions(visitor_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_widget_sessions_expires ON widget_sessions(expires_at)`)
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS pin_attempts (
+          id           TEXT PRIMARY KEY,
+          identifier   TEXT NOT NULL,
+          success      INTEGER NOT NULL,
+          attempted_at INTEGER NOT NULL DEFAULT (unixepoch())
+        )
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_pin_attempts_identifier_at ON pin_attempts(identifier, attempted_at)`)
+
+      // ─── Existing tasks table — v4 field additions ──────────────────
+      //
+      // langfuse_trace_id is intentionally NOT added here. The
+      // observability_links table from migration 051 already provides
+      // task → trace joins with richer metadata (trace_health, cost_usd,
+      // latency_ms, prompt_name/version, model_provider/name, etc.).
+      // Use observability_links for trace lookup; do not denormalize
+      // onto tasks.
+
+      db.exec(`ALTER TABLE tasks ADD COLUMN deal_id TEXT`)
+      db.exec(`ALTER TABLE tasks ADD COLUMN exception_category TEXT`)
+      db.exec(`ALTER TABLE tasks ADD COLUMN mode TEXT NOT NULL DEFAULT 'buyer'`)
+      db.exec(`ALTER TABLE tasks ADD COLUMN admin_identity TEXT`)
+      db.exec(`ALTER TABLE tasks ADD COLUMN admin_auth_tier INTEGER`)
+      db.exec(`ALTER TABLE tasks ADD COLUMN intent_thread_id TEXT`)
+      db.exec(`ALTER TABLE tasks ADD COLUMN allowed_tools TEXT`)
+
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_deal ON tasks(deal_id)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_mode ON tasks(mode)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_intent_thread ON tasks(intent_thread_id)`)
+    }
   }
 ]
 
