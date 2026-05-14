@@ -21,6 +21,14 @@ const endpoints: Endpoint[] = [
   { path: '/api/tasks/outcomes', methods: ['GET'], description: 'Task outcome analytics', tag: 'Tasks', auth: 'viewer' },
   { path: '/api/tasks/regression', methods: ['GET'], description: 'Task regression detection', tag: 'Tasks', auth: 'viewer' },
 
+  // ── Shared Brain ─────────────────────────────────
+  { path: '/api/graphiti/health', methods: ['GET'], description: 'Graphiti health and read-only configuration (no namespace)', tag: 'Graphiti', auth: 'viewer' },
+  { path: '/api/graphiti/facts', methods: ['GET'], description: 'Recent Graphiti facts (requires ?namespace=vch_buyer|vch_admin|vch_wholesale)', tag: 'Graphiti', auth: 'viewer' },
+  { path: '/api/graphiti/search', methods: ['GET'], description: 'Search Graphiti facts (requires ?namespace=...&q=...)', tag: 'Graphiti', auth: 'viewer' },
+  { path: '/api/graphiti/graph', methods: ['GET'], description: 'Graph projection from recent facts (requires ?namespace=...)', tag: 'Graphiti', auth: 'viewer' },
+  { path: '/api/graphiti/stats', methods: ['GET'], description: 'Recent write and entity touch stats (requires ?namespace=...)', tag: 'Graphiti', auth: 'viewer' },
+  { path: '/api/graphiti/conflicts', methods: ['GET'], description: 'Same-entity multi-agent conflicts (requires ?namespace=...)', tag: 'Graphiti', auth: 'viewer' },
+
   // ── Projects ──────────────────────────────────────
   { path: '/api/workspaces', methods: ['GET'], description: 'Tenant-scoped workspace listing', tag: 'Projects', auth: 'viewer' },
   { path: '/api/projects', methods: ['GET', 'POST'], description: 'Project CRUD — list, create', tag: 'Projects', auth: 'viewer/operator' },

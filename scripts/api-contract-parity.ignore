@@ -19,3 +19,10 @@ POST /api/hermes/events
 GET /api/tasks/{id}/observability/langfuse
 POST /api/tasks/{id}/observability/langfuse
 POST /api/tasks/{id}/observability/langfuse/refresh
+# Graphiti Shared Brain read-only API — TODO: add OpenAPI schemas once the v1 payload settles
+GET /api/graphiti/conflicts
+GET /api/graphiti/facts
+GET /api/graphiti/graph
+GET /api/graphiti/health
+GET /api/graphiti/search
+GET /api/graphiti/stats
