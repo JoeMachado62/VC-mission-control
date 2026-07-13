@@ -55,3 +55,6 @@ handoff/wireguard/*.conf
 handoff/wireguard/*.private
 handoff/wireguard/*.public
 handoff/wireguard/apply-*.sh
+
+# Personal IDE workspace (VS Code multi-root)
+docs/architecture/root.code-workspace

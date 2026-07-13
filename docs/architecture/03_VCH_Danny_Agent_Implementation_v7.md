@@ -462,9 +462,16 @@ VCH_BACKEND_SERVICE_TOKEN=<token issued by backend; see Doc 2 §7>
 GHL_AUTH_HEADER="Bearer pit-..."
 GHL_LOCATION_ID="lc_..."
 
-# Telnyx (for SMS sends via backend — Danny does not call Telnyx directly,
-# but env signals which Telnyx number is the buyer-facing line)
+# Telnyx — SMS still sends via backend (Danny does not call Telnyx for SMS).
+# TELNYX_BUYER_NUMBER signals which number is the buyer-facing SMS line.
 TELNYX_BUYER_NUMBER="+1XXXXXXXXXX"
+# VOICE OVERRIDE (2026-06-22): voice ownership = the Danny node (not MC).
+# CHOSEN MECHANISM (not yet built): a node-side OpenAI-compatible streaming HTTPS
+# endpoint exposes the local danny agent as a Custom LLM to a Telnyx AI Assistant;
+# Telnyx does STT/TTS + call control. The voice-call plugin path was tried and
+# REVERTED (can't bind on a remote node). See docs/voice-on-danny-v7-override-2026-06-22-new.md §7
+TELNYX_API_KEY="..."            # Telnyx API (provisioning / optional Call Control fallback)
+# TELNYX_CONNECTION_ID / TELNYX_PUBLIC_KEY — only for a Call Control path; NOT used by the Custom-LLM path
 
 # Langfuse
 LANGFUSE_HOST=https://observe.virtualcarhub.cloud
@@ -1903,7 +1910,7 @@ These tests verify Danny's behavior is correct. Each test case includes input, e
 | AC-S02 | Buyer-mode skill attempts to invoke admin-mode tool → Rejected at allowed_tools layer | OpenClaw enforces mode boundary; no leakage |
 | AC-S03 | Danny's response contains a Langfuse trace ID returned to caller | Every response includes trace_id for operator drill-down |
 | AC-S04 | Danny's actions logged to audit_log via agent_actions_service | Every state change has corresponding audit row with matching trace_id |
-| AC-S05 | Danny does NOT have GHL/MarketCheck/Telnyx tokens in /proc/<pid>/environ (those belong to OpenClaw daemon) | Verify via inspection; Python skill scripts use env vars only for backend service token |
+| AC-S05 | Danny does NOT have GHL/MarketCheck tokens in /proc/<pid>/environ (those belong to OpenClaw daemon). **`TELNYX_API_KEY` may be present (2026-06-22 voice override) for the node-side voice ingress, owned by the daemon, not skill scripts.** (`TELNYX_CONNECTION_ID`/`TELNYX_PUBLIC_KEY` are only present if a Call Control fallback is kept; the chosen Custom-LLM voice path needs neither.) | Verify via inspection; Python skill scripts use env vars only for backend service token |
 | AC-S06 | Skill SHA versioning works — agent_versions table updated on deploy | Each agent has a current agent_versions row with persona_sha + skill_catalog_sha |
 | AC-S07 | admin-danny system-health check runs and reports to admin-mc-hub | fleet_state row updated periodically with Danny VPS status |
 | AC-S08 | Lobster danny-restart workflow: halts at approval, resumes on approve, verifies post-state | resumeToken returned; service restarts; post_verify passes; audit row written |

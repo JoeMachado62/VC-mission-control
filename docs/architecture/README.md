@@ -19,7 +19,7 @@ Read in this order:
 | # | Document | Audience | What's in it |
 |---|---|---|---|
 | 1 | `01_VCH_Fleet_Architecture_v7.md` | Everyone | Foundational. System topology, OpenClaw mental model, skill format conventions (SKILL.md), MCP integration patterns, observability, security, secret hygiene, six-phase build plan, open questions. Every VPS session reads this first. |
-| 2 | `02_VCH_Backend_MC_Implementation_v7.md` | Backend VPS + Mission Control VPS sessions | Two-part document. Part 1 (Backend, §1–8): FastAPI services, Postgres schema, `agent_actions_service` policy boundary, audit logging, matching engine integration, deal state machine, per-agent service token provisioning. Part 2 (MC, §9–20): OpenClaw gateway hosting, Caddy TLS, Langfuse, Graphiti + FalkorDB, fleet console UI, `admin-mc-hub` agent including backend admin operations, Lobster workflows on MC, master pairing token management. |
+| 2 | `02_VCH_Backend_MC_Implementation_v7.md` | Backend VPS + Mission Control VPS sessions | Two-part document. Part 1 (Backend, §1–8): FastAPI services, Postgres schema, `agent_actions_service` policy boundary, audit logging, matching engine integration, deal state machine, per-agent service token provisioning. Part 2 (MC, §9–20): OpenClaw gateway hosting (loopback + socat relay), Caddy TLS, Langfuse, Graphiti + Neo4j, fleet console UI, `admin-mc-hub` agent including backend admin operations, Lobster workflows on MC, master pairing token management. |
 | 3 | `03_VCH_Danny_Agent_Implementation_v7.md` | Danny VPS session | Complete spec for the `danny` agent — dual-mode (buyer + admin), 12 buyer-mode skills and 6 admin-mode skills (each with full SKILL.md content or structured frontmatter), persona files (AGENTS.md / SOUL.md / USER.md / IDENTITY.md), mode determination via channel routing, behavioral framework (untrusted content wrapping, confidence-based extraction, HITL escalation taxonomy, rate limits), eval suite. Plus the `admin-danny` administrator agent. |
 | 4 | `04_VCH_Negotiator_Agent_Implementation_v7.md` | Negotiator VPS session | Complete spec for the `negotiator` agent — wholesale-only single mode, 12 production skills, both GHL MCP and MarketCheck MCP integration, Browser Use for dealer chat widget operation via sub-agent spawning, strategy report framework with pricing envelope, bounds-aware negotiation principles, HITL escalation taxonomy, eval suite. Plus the `admin-negotiator` administrator agent. |
 
@@ -31,7 +31,7 @@ Each doc is **self-contained** — it does not require reading v4, v5, or v6 doc
 
 **Four VPSs at launch** (with headroom for six future specialist agents):
 
-- **Mission Control** (`10.50.0.1`) — fleet control plane. Hosts OpenClaw gateway (the hub all spokes pair to), Langfuse (observability), Graphiti + FalkorDB (shared knowledge graph), Caddy (TLS termination), Next.js fleet console UI, and the `admin-mc-hub` agent.
+- **Mission Control** (`10.50.0.1`) — fleet control plane. Hosts OpenClaw gateway (the hub all spokes pair to), Langfuse (observability), Graphiti + Neo4j (shared knowledge graph), Caddy (TLS termination), Next.js fleet console UI, and the `admin-mc-hub` agent.
 - **Backend** (`10.50.0.4`) — FastAPI + Postgres. Runs `agent_actions_service` (the policy enforcement boundary for all agent state changes), orchestrator (stall detection, scheduled jobs, webhooks), matching engine, deal state machine, audit service. **No OpenClaw on this VPS** — admin operations come from `admin-mc-hub` via HTTP.
 - **Danny** (`10.50.0.2`) — OpenClaw 2026.4.14 + `danny` production agent (dual-mode buyer + admin) + `admin-danny` VPS administrator. GHL MCP only (no MarketCheck — that's Negotiator's domain).
 - **Negotiator** (`10.50.0.3`) — OpenClaw 2026.4.14 + `negotiator` production agent (wholesale-only) + `admin-negotiator` VPS administrator + Browser Use Python library (for dealer chat widget operation). Both GHL MCP and MarketCheck MCP.
@@ -49,7 +49,7 @@ All agent state changes route through backend's `/v1/agent-actions/*` endpoints,
 Every v7 document opens with a **§0.5 "Verifying Against Current Reality"** section. **Read it before proceeding to the substance.** It contains:
 
 - **The three rules:** current reality wins, verify before assuming, run the command to confirm
-- **Canonical URLs** for every tool in the stack (OpenClaw, MCP, GHL, MarketCheck, Telnyx, Langfuse, Graphiti, FalkorDB, Browser Use, Caddy, WireGuard)
+- **Canonical URLs** for every tool in the stack (OpenClaw, MCP, GHL, MarketCheck, Telnyx, Langfuse, Graphiti, Neo4j, FalkorDB, Browser Use, Caddy, WireGuard)
 - **Anti-patterns from this project's history** that have caused real architectural errors — e.g., treating OpenClaw as a thin Node CLI rather than the substantial agent platform it is; assuming `pip install openclaw` rather than `npm install -g openclaw@<version>`; inventing GHL tool names like `ghl_get_contact` rather than using the real `contacts_get-contact` names; assuming Twilio for voice/SMS rather than Telnyx
 
 If you find yourself relying on what you "remember" about OpenClaw, MCP, Browser Use, or any other named tool — stop, consult the canonical URL, verify the actual current behavior.

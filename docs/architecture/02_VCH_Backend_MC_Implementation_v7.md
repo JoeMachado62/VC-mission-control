@@ -1,9 +1,20 @@
-# VCH Backend + Mission Control Implementation — v7
+# VCH Backend + Mission Control Implementation — v7.1
 
-**Version:** 7.0 | May 2026
+**Version:** 7.1 | May 2026
 **Status:** Approved for build
 **Prerequisite reading:** `01_VCH_Fleet_Architecture_v7.md` — every concept used here is defined there.
 **Audience:** Two Claude Code sessions read this — the one on Backend VPS (`10.50.0.4`) and the one on Mission Control VPS (`10.50.0.1`). Each reads only their relevant Part below.
+
+**Changelog v7.0 → v7.1 (Operational Reality Alignment):**
+
+- §10.1 — OpenClaw gateway: deployment uses **loopback bind + socat relay** (not 0.0.0.0). Real systemd units included. `openclaw gateway status` CLI is unreliable on this build (stale-state anti-pattern); use `systemctl is-active` + `ss -tlnp` for verification.
+- §10.2 / §17 — Pairing CLI is `openclaw devices` and `openclaw pairing`, NOT `openclaw operators` (the latter doesn't exist on OpenClaw 2026.4.14). Production deploys two operator devices (master + console identity).
+- §11 — Caddyfile reflects actual deployment: serves from `virtualcarhub.cloud` root + `observe.virtualcarhub.cloud`. The `mc.virtualcarhub.com`, `danny.virtualcarhub.com`, and `app.virtualcarhub.com` references in v7.0 were speculative; only the first two are reserved-but-not-configured, and `app.*` is served off-VPS.
+- §12 — Langfuse on port **3000** (not 3002 — v7.0's Caddyfile snippet contradicted its own §0.5 warning). Compose dir is `/opt/agentops/langfuse/` with an override pattern for loopback binding.
+- §13 — Graphiti backed by **Neo4j 5.26** (not FalkorDB; both are supported by Graphiti, Neo4j is VCH's deployed choice). Three-container Docker deployment (`graphiti-neo4j`, `graphiti-rest`, `graphiti-mcp`).
+- Doc 1 §5.4, §0.5 reference list, topology diagram, and acceptance criteria updated correspondingly.
+
+No agent behavior, endpoint contracts, or acceptance criteria changed in v7.1. The changes are operational/deployment alignment with production reality.
 
 ---
 
@@ -12,7 +23,7 @@
 This document implements the infrastructure foundation that the production agents (Danny, Negotiator) depend on. It is split into two Parts:
 
 - **Part 1 — Backend VPS** — FastAPI services, Postgres data layer, `agent_actions_service` (the policy enforcement boundary), audit logging, matching engine integration, deal state machine, orchestrator. **No OpenClaw installation.**
-- **Part 2 — Mission Control VPS** — OpenClaw gateway hosting, Caddy TLS termination, Langfuse, Graphiti + FalkorDB, fleet console Next.js UI, `admin-mc-hub` agent (which also owns all backend administration via HTTP), master pairing token management
+- **Part 2 — Mission Control VPS** — OpenClaw gateway hosting, Caddy TLS termination, Langfuse, Graphiti + Neo4j, fleet console Next.js UI, `admin-mc-hub` agent (which also owns all backend administration via HTTP), master pairing token management
 
 A Backend VPS session reads Part 1. An MC VPS session reads Part 2. Cross-cutting concerns (§0.5, §20 open questions, §21 references) apply to both.
 
@@ -64,7 +75,8 @@ Full discussion and master reference list in `01_VCH_Fleet_Architecture_v7.md` �
 
 **Shared knowledge graph:**
 - Graphiti: https://github.com/getzep/graphiti
-- FalkorDB: https://docs.falkordb.com
+- Neo4j (VCH-deployed backend): https://neo4j.com/docs/
+- FalkorDB (supported alternative): https://docs.falkordb.com
 
 ### Anti-Patterns Specific to This Doc
 
@@ -72,8 +84,10 @@ Full discussion and master reference list in `01_VCH_Fleet_Architecture_v7.md` �
 - **Assuming Twilio for voice/SMS** — Telnyx is the canonical provider
 - **Assuming `api.virtualcarhub.com` is the backend URL** — that's NXDOMAIN; canonical is `http://backend-vps:8000` over WG
 - **Treating `agent_actions_service` as something agents call to "ask permission"** — it's the policy enforcement boundary. Agents call it for every state change; the service either performs the operation or rejects it. There is no other write path.
-- **Assuming Langfuse runs on port 3002 reachable as `http://mc-vps:3002`** — it's behind Caddy at `https://observe.virtualcarhub.cloud`
-- **Treating MC as just an admin UI** — MC also hosts the OpenClaw gateway, Langfuse, Graphiti, FalkorDB, Caddy. It's the fleet control plane.
+- **Assuming Langfuse runs on port 3002** — it runs on `127.0.0.1:3000` (loopback) and is reached publicly through Caddy at `https://observe.virtualcarhub.cloud`. The "3002 myth" came from earlier drafts; the deployed reality is 3000.
+- **Trusting `openclaw gateway status` lifecycle output** — on OpenClaw 2026.4.14 this command reads a different systemd unit than the one actually running the gateway and reports "stopped" even when the gateway is healthy. Use `systemctl is-active openclaw-gateway` + `ss -tlnp | grep 18789` instead.
+- **Using `openclaw operators`** — that subcommand doesn't exist on OpenClaw 2026.4.14. Pairing surface is `openclaw devices` and `openclaw pairing`.
+- **Treating MC as just an admin UI** — MC also hosts the OpenClaw gateway, Langfuse, Graphiti + Neo4j, Caddy. It's the fleet control plane.
 
 ---
 
@@ -1161,20 +1175,22 @@ Read this Part if you are the Claude Code session on the MC VPS (`10.50.0.1`, ho
 wg show
 ip addr show wg0
 
-# OpenClaw gateway
-openclaw gateway status
+# OpenClaw gateway (use systemctl + ss; openclaw gateway status is unreliable — see §10.1)
+systemctl is-active openclaw-gateway
+systemctl is-active openclaw-gateway-tunnel
+ss -tlnp | grep 18789
 jq '.gateway' /root/.openclaw/openclaw.json
+openclaw devices list
 
 # Existing services
 systemctl status mission-control 2>/dev/null
 systemctl status caddy
-docker ps | grep -iE "langfuse|falkordb|graphiti"
-systemctl status graphiti 2>/dev/null
+docker ps | grep -iE "langfuse|graphiti|neo4j"
 
 # Public reachability
-curl -I https://mc.virtualcarhub.com
-curl -I https://observe.virtualcarhub.cloud
-curl -I https://virtualcarhub.cloud/gw
+curl -I https://virtualcarhub.cloud/                   # MC fleet console
+curl -I https://observe.virtualcarhub.cloud/api/public/health   # Langfuse healthcheck
+curl -I https://virtualcarhub.cloud/gw                 # Gateway WS endpoint
 ```
 
 Report per format adapted from §1.5.
@@ -1185,30 +1201,109 @@ Report per format adapted from §1.5.
 
 MC hosts the OpenClaw gateway (hub all spokes pair to).
 
-### 10.1 Gateway Install
+### 10.1 Gateway Install + Bind Pattern
 
-Per Doc 1 factual corrections (§12):
+VCH deploys the gateway with a **loopback bind + socat relay** pattern (more secure than direct 0.0.0.0 bind — gateway process never listens on the network directly; a separate relay process exposes the loopback listener over WireGuard only).
 
 ```bash
 npm install -g openclaw@2026.4.14
-
-openclaw config set gateway.mode host
-openclaw config set gateway.host.bindAddress 0.0.0.0
-openclaw config set gateway.host.port 18789
-
-openclaw gateway install
-openclaw gateway status
-ss -tlnp | grep 18789
 ```
+
+Two systemd units coordinate the deployment:
+
+**`/etc/systemd/system/openclaw-gateway.service`** — gateway process bound to loopback:
+
+```ini
+[Unit]
+Description=OpenClaw Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HOME=/root
+Environment=OPENCLAW_STATE_DIR=/root/.openclaw
+Environment=NODE_COMPILE_CACHE=/var/tmp/openclaw-compile-cache
+Environment=OPENCLAW_NO_RESPAWN=1
+ExecStart=/usr/bin/env openclaw gateway --bind loopback --port 18789
+Restart=always
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**`/etc/systemd/system/openclaw-gateway-tunnel.service`** — socat relay exposing the loopback listener on the WG IP:
+
+```ini
+[Unit]
+Description=Socat tunnel-relay for OpenClaw gateway (wg0 -> loopback)
+After=network-online.target wg-quick@wg0.service openclaw-gateway.service
+Wants=network-online.target wg-quick@wg0.service
+PartOf=openclaw-gateway.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat TCP-LISTEN:18789,bind=10.50.0.1,fork,reuseaddr TCP:127.0.0.1:18789
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+The `PartOf=openclaw-gateway.service` directive on the tunnel ensures restarting the gateway automatically restarts the relay. Required: install both units, enable both, start the gateway first then the tunnel.
+
+```bash
+systemctl daemon-reload
+systemctl enable --now openclaw-gateway.service
+systemctl enable --now openclaw-gateway-tunnel.service
+```
+
+**Verification — trust systemctl + ss, NOT `openclaw gateway status`:**
+
+The `openclaw gateway status` CLI command reports stale "Runtime: stopped" state on this build even when the gateway is actively running (it reads a disabled user-systemd unit, not the system-systemd unit that's actually running the process). This is the §0.5 stale-CLI-output anti-pattern in action on this specific command.
+
+Use authoritative verification:
+
+```bash
+systemctl is-active openclaw-gateway          # expected: active
+systemctl is-active openclaw-gateway-tunnel   # expected: active
+ss -tlnp | grep 18789                         # expected: 127.0.0.1:18789 (gateway) + 10.50.0.1:18789 (socat)
+```
+
+If both systemd units report `active` and `ss` shows both listeners, the gateway is reachable from spokes over WG. Do NOT rely on `openclaw gateway status` for operational decisions.
 
 ### 10.2 Master Operator Pairing Token
 
+On OpenClaw 2026.4.14, the pairing surface is `openclaw devices` and `openclaw pairing` — there is NO `openclaw operators` subcommand. The doc previously referenced `openclaw operators` which is incorrect for this build.
+
+Create the master operator device with full operator scopes:
+
 ```bash
-openclaw operators create --name "joe" --scopes "operator.pairing,operator.admin"
-# 64-hex token. COPY IT. Store in secrets vault.
+openclaw pairing create-operator \
+  --name "joe-master" \
+  --scopes "operator.admin,operator.read,operator.write,operator.approvals,operator.pairing,operator.talk.secrets"
+# Token output: 64-hex string. COPY IT. Store in secrets vault.
 ```
 
+Verify with:
+
+```bash
+openclaw devices list
+```
+
+The output shows all paired devices, their roles, scopes, and last-seen IPs. The master operator appears as a row with role `operator` and the full set of `operator.*` scopes.
+
 Stored in MC's secrets vault; never logged or exposed. Used by VCH internal tooling and to issue scoped pairing tokens for spokes.
+
+**Note on dual operator devices:** VCH's production deployment carries TWO operator-role devices:
+1. The master operator (the `joe-master` identity above, with all six operator scopes)
+2. A second operator device named "Mission Control" with scope `operator.admin` only
+
+The "Mission Control" entry appears to be the fleet console UI's own operator identity (so the console can authenticate as an operator when surfacing fleet state, approving Lobster workflows, etc.). If you see this row in `openclaw devices list`, do not assume it is a duplicate — it is the console's identity and should remain. Confirm with the operator before any "cleanup" operation that touches operator devices.
 
 ### 10.3 Pairing for Spokes
 
@@ -1220,52 +1315,124 @@ Backend VPS does NOT pair to the gateway (no OpenClaw installation there).
 
 ## 11. CADDY CONFIGURATION
 
-Caddy fronts public domains and terminates TLS.
+Caddy fronts the public domains served from MC and terminates TLS. VCH's production deployment uses a minimal Caddyfile that serves three concerns from two distinct domains:
 
 ```caddyfile
 # /etc/caddy/Caddyfile
 
-mc.virtualcarhub.com {
-    reverse_proxy localhost:3000  # Next.js MC app
-    encode gzip
-}
-
-observe.virtualcarhub.cloud {
-    reverse_proxy localhost:3002  # Langfuse default port
-    encode gzip
+(security_headers) {
+    header {
+        ?Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    }
 }
 
 virtualcarhub.cloud {
-    @gw path /gw /gw/*
-    reverse_proxy @gw localhost:18789
-    handle { respond "Not Found" 404 }
+    import security_headers
+    encode zstd gzip
+
+    handle_path /gw* {
+        reverse_proxy 127.0.0.1:18789
+    }
+
+    reverse_proxy 127.0.0.1:3005
 }
 
-danny.virtualcarhub.com {
-    reverse_proxy localhost:3001  # widget gateway
-}
+observe.virtualcarhub.cloud {
+    import security_headers
+    encode zstd gzip
 
-app.virtualcarhub.com {
-    reverse_proxy <consumer-frontend-host>
+    reverse_proxy 127.0.0.1:3000
 }
 ```
 
-`caddy reload` after config changes (preserves TLS state).
+What this serves:
+
+| Domain | Path | Backend (loopback) | Purpose |
+|---|---|---|---|
+| `virtualcarhub.cloud` | `/gw*` (handled first) | `127.0.0.1:18789` | OpenClaw gateway WS — spokes pair via `wss://virtualcarhub.cloud/gw` |
+| `virtualcarhub.cloud` | (everything else) | `127.0.0.1:3005` | Mission Control fleet console (Next.js) |
+| `observe.virtualcarhub.cloud` | (all) | `127.0.0.1:3000` | Langfuse |
+
+**Reserved but not currently configured:**
+
+- `mc.virtualcarhub.com` — was originally reserved for the MC console; current deployment serves the console at `virtualcarhub.cloud` root instead. The subdomain remains available for future use.
+- `danny.virtualcarhub.com` — reserved for buyer-facing widget gateway. Not currently provisioned on MC. When needed, add as a new Caddy block reverse-proxying to the widget backend (location TBD).
+- `app.virtualcarhub.com` — served by a different host (off-VPS nginx), NOT by MC's Caddy. Do not add to this Caddyfile.
+
+**Port assignments to remember:**
+
+- `127.0.0.1:3000` — Langfuse web (because Langfuse defaults to 3000 and VCH didn't remap it)
+- `127.0.0.1:3005` — MC Next.js console (because Langfuse owns 3000)
+- `127.0.0.1:18789` — OpenClaw gateway (loopback bind; see §10.1)
+
+`caddy reload` after config changes (preserves TLS state and active connections).
 
 ---
 
 ## 12. LANGFUSE SETUP
 
-Docker stack from upstream self-host docs. Deploy to `/opt/langfuse/`.
+Docker Compose stack from upstream Langfuse self-host repo, deployed at `/opt/agentops/langfuse/`. The upstream `docker-compose.yml` is used verbatim; a small `docker-compose.override.yml` carries the VCH-specific customization (binding ports to loopback only).
 
-Environment for `langfuse-server`:
+### 12.1 Stack Components
+
+| Service | Container | Loopback port | Notes |
+|---|---|---|---|
+| Langfuse Web | `langfuse-langfuse-web-1` | `127.0.0.1:3000` | Public via Caddy at observe.virtualcarhub.cloud |
+| Langfuse Worker | `langfuse-langfuse-worker-1` | `127.0.0.1:3030` | Background processing |
+| Postgres | `langfuse-postgres-1` | `127.0.0.1:5432` | Langfuse's own DB; separate from VCH backend's Postgres |
+| ClickHouse | `langfuse-clickhouse-1` | `127.0.0.1:8123, :9000` | Trace storage |
+| Redis | `langfuse-redis-1` | `127.0.0.1:6379` | Cache/queue |
+| MinIO | `langfuse-minio-1` | `127.0.0.1:9090, :9091` | S3-compatible object storage |
+
+**Note:** Langfuse-web is on port 3000 (not 3002 as some prior drafts of this doc stated). Doc 1 §0.5 specifically flagged "do not assume Langfuse runs on 3002" — this section reflects the actual port. Caddy proxies `observe.virtualcarhub.cloud` → `127.0.0.1:3000`.
+
+### 12.2 VCH-Specific Override
+
+The single customization layered on top of the upstream compose file:
+
+```yaml
+# /opt/agentops/langfuse/docker-compose.override.yml
+
+services:
+  langfuse-web:
+    ports: !override
+      - 127.0.0.1:3000:3000
+
+  minio:
+    ports: !override
+      - 127.0.0.1:9090:9000
+      - 127.0.0.1:9091:9001
+```
+
+The `!override` directive replaces the upstream port mappings (which expose to 0.0.0.0 by default) with loopback-only bindings. All public access goes through Caddy.
+
+### 12.3 Configuration & Secrets
+
+Secrets live in `/opt/agentops/langfuse/.env` (NOT in the compose files). The upstream `docker-compose.yml` references `${VAR:-CHANGEME}` placeholders that resolve against this `.env`. Required keys at minimum:
+
 - `NEXTAUTH_URL=https://observe.virtualcarhub.cloud`
-- `NEXTAUTH_SECRET=<secret>`
-- `DATABASE_URL=postgresql://...` (separate Langfuse DB)
-- `SALT=<salt>`
+- `NEXTAUTH_SECRET=<random secret>`
+- `SALT=<random salt>`
+- `DATABASE_URL=postgresql://...` (resolves to the langfuse-postgres container)
+- `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`
+- `REDIS_AUTH=<redis password>`
+- `LANGFUSE_S3_*` for MinIO
 
-After deploy:
-1. Access at https://observe.virtualcarhub.cloud
+For the canonical full list, see the upstream `.env.example` in https://github.com/langfuse/langfuse — VCH does not deviate from upstream env schema.
+
+### 12.4 Deploy + Verify
+
+```bash
+cd /opt/agentops/langfuse/
+docker compose up -d
+docker compose ps              # all services should be Up + healthy
+curl -s http://127.0.0.1:3000/api/public/health  # expected: {"status":"OK","version":"3.x.x"}
+curl -sI https://observe.virtualcarhub.cloud      # expected: 200 via Caddy
+```
+
+### 12.5 Project Setup (Post-Deploy)
+
+1. Open `https://observe.virtualcarhub.cloud` in a browser
 2. Create org "VirtualCarHub"
 3. Create project "vch-production"
 4. Generate API keys (Public + Secret)
@@ -1274,54 +1441,127 @@ After deploy:
    - `LANGFUSE_PUBLIC_KEY=pk_...`
    - `LANGFUSE_SECRET_KEY=sk_...`
 
-Verification: traces appear per agent with correct tags (agent, mode, channel, layer:3 on admin actions, Telnyx span names — NOT Twilio).
+Verification: traces from each agent appear with correct tags (agent, mode, channel, agent_version, worker_vps).
 
 ---
 
-## 13. GRAPHITI + FALKORDB SETUP
+## 13. GRAPHITI + NEO4J SETUP
 
-### 13.1 FalkorDB
+VCH's production deployment uses **Graphiti backed by Neo4j 5.26**, running as three Docker containers. Graphiti supports Neo4j and FalkorDB equally — the choice is a driver/config flag rather than a fundamental architecture difference. Neo4j is the deployed VCH choice for tooling maturity reasons; the doc previously listed FalkorDB but production runs Neo4j.
+
+### 13.1 Stack Components
+
+Three containers, all running from `/root/graphiti/docker-compose.validation.yml` (note: the filename is vestigial — operator may rename to `docker-compose.yml` for clarity; the compose project label confirms this file is what's actually running):
+
+| Container | Image | Loopback port | WG port | Purpose |
+|---|---|---|---|---|
+| `graphiti-neo4j` | `neo4j:5.26.0` | `127.0.0.1:7474, :7687` | — | Graph store (HTTP + Bolt) |
+| `graphiti-rest` | `zepai/graphiti:latest` | `127.0.0.1:8001` | `10.50.0.1:8001` | REST API for skill scripts (Python via `graphiti-core`) |
+| `graphiti-mcp` | `zepai/knowledge-graph-mcp:standalone` | `127.0.0.1:8002` | `10.50.0.1:8002` | MCP-compatible interface for OpenClaw MCPorter |
+
+Both `graphiti-rest` and `graphiti-mcp` connect to `graphiti-neo4j` via Bolt (`bolt://neo4j:7687`) on the internal `graphiti-net` Docker network. Neo4j is not exposed beyond loopback — only the two Graphiti interfaces are.
+
+### 13.2 Compose File
+
+The actual deployment:
+
+```yaml
+# /root/graphiti/docker-compose.validation.yml
+
+services:
+  neo4j:
+    image: neo4j:5.26.0
+    container_name: graphiti-neo4j
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_memory_pagecache_size=512m
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - graphiti_neo4j_data:/data
+      - graphiti_neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "wget", "-O", "/dev/null", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [graphiti-net]
+    restart: unless-stopped
+
+  graphiti-rest:
+    image: zepai/graphiti:latest
+    container_name: graphiti-rest
+    env_file: [./server/.env]
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+    depends_on:
+      neo4j: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:8001:8000"
+      - "10.50.0.1:8001:8000"
+    networks: [graphiti-net]
+    restart: unless-stopped
+
+  graphiti-mcp:
+    image: zepai/knowledge-graph-mcp:standalone
+    container_name: graphiti-mcp
+    env_file: [./mcp_server/.env]
+    depends_on:
+      neo4j: { condition: service_healthy }
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - CONFIG_PATH=/app/mcp/config/config.yaml
+      - PATH=/root/.local/bin:${PATH}
+    volumes:
+      - ./mcp_server/config/config-docker-neo4j.yaml:/app/mcp/config/config.yaml:ro
+    ports:
+      - "127.0.0.1:8002:8000"
+      - "10.50.0.1:8002:8000"
+    command: ["uv", "run", "main.py"]
+    networks: [graphiti-net]
+    restart: unless-stopped
+
+volumes:
+  graphiti_neo4j_data:
+  graphiti_neo4j_logs:
+
+networks:
+  graphiti-net:
+    driver: bridge
+```
+
+### 13.3 Secrets
+
+Two env files referenced by the compose:
+
+- `/root/graphiti/server/.env` — graphiti-rest config (Neo4j password, OpenAI API key for entity extraction, etc.)
+- `/root/graphiti/mcp_server/.env` — graphiti-mcp config (same Neo4j password, possibly different OpenAI key)
+
+`${NEO4J_PASSWORD}` in the compose file resolves against the operator's shell env or a top-level `.env` file at `/root/graphiti/.env`. Set this before `docker compose up`.
+
+### 13.4 Deploy + Verify
 
 ```bash
-docker run -d \
-  --name falkordb \
-  --restart unless-stopped \
-  -p 127.0.0.1:6379:6379 \
-  -v /opt/falkordb/data:/data \
-  falkordb/falkordb:latest
+cd /root/graphiti/
+docker compose -f docker-compose.validation.yml up -d
+docker compose -f docker-compose.validation.yml ps
+
+# Healthcheck the REST API (used by skill scripts)
+curl http://127.0.0.1:8001/healthcheck
+# Expected: {"status":"healthy"}
+
+# From an agent VPS over WG (Danny, Negotiator)
+curl http://mc-vps:8001/healthcheck
+# Expected: {"status":"healthy"}
 ```
 
-Bind to `127.0.0.1` only.
+The MCP interface on port 8002 does NOT expose `/healthcheck` (different code path). Verify it via OpenClaw's MCP registry inspection (`openclaw mcp servers` from any spoke after MCP registration).
 
-### 13.2 Graphiti Service
-
-```bash
-cd /opt/graphiti
-python -m venv venv
-source venv/bin/activate
-pip install graphiti-core[falkordb]
-```
-
-systemd unit:
-```ini
-[Service]
-EnvironmentFile=/etc/graphiti.env
-ExecStart=/opt/graphiti/venv/bin/python -m graphiti_core.server
-Restart=always
-```
-
-`/etc/graphiti.env`:
-```
-FALKORDB_HOST=127.0.0.1
-FALKORDB_PORT=6379
-OPENAI_API_KEY=<for entity extraction>
-LISTEN_HOST=0.0.0.0
-LISTEN_PORT=8001
-```
-
-Bind to `0.0.0.0:8001`; rely on WG for access control.
-
-### 13.3 Schema
+### 13.5 Schema
 
 | Entity | Fields |
 |---|---|
@@ -1331,14 +1571,9 @@ Bind to `0.0.0.0:8001`; rely on WG for access control.
 | `Vehicle` | vin, year, make, model, trim |
 | `Deal` | deal_id, status, value |
 
-Relations: Buyer—INTERESTED_IN→Vehicle, Dealer—HAS_CONTACT→DealerContact, Buyer—NEGOTIATED_WITH→Dealer (temporal), Dealer—OWNS→Vehicle, Deal—INVOLVES→Buyer, Deal—INVOLVES→Dealer.
+Relations: `Buyer—INTERESTED_IN→Vehicle`, `Dealer—HAS_CONTACT→DealerContact`, `Buyer—NEGOTIATED_WITH→Dealer` (temporal), `Dealer—OWNS→Vehicle`, `Deal—INVOLVES→Buyer`, `Deal—INVOLVES→Dealer`.
 
-Verification:
-```bash
-curl http://mc-vps:8001/healthcheck
-```
-
-Skills query via `graphiti-core` Python client.
+Skills query via `graphiti-core` Python client pointed at `GRAPHITI_API_URL=http://mc-vps:8001` (per-agent `.env` file).
 
 ---
 
@@ -1765,22 +2000,32 @@ Coordinates four-surface secret rotation on a spoke VPS. The actual rotation run
 
 ## 17. MASTER PAIRING TOKEN MANAGEMENT
 
-Stored in MC's secrets vault. Never logged. Used to issue scoped per-spoke pairing tokens.
+The master operator token (created in §10.2 via `openclaw pairing create-operator`) is stored in MC's secrets vault. Never logged. Used to issue scoped per-spoke pairing tokens.
 
 ### 17.1 Issuing a Spoke Pairing Token
 
+On OpenClaw 2026.4.14, spoke pairing tokens are issued via `openclaw pairing`:
+
 ```bash
-openclaw operators create-pairing-token \
+openclaw pairing create-node \
   --name "negotiator-vps-token" \
   --expires-in-days 30
 # Token output: 64-hex string. Provide to spoke VPS operator out-of-band.
 ```
 
-Spoke uses this token in its `gateway.remote.token` config setting. Pairing handshake consumes it; spoke is then identified by its node certificate.
+Spoke uses this token in its `gateway.remote.token` config setting (per Doc 4 §2.2). Pairing handshake consumes it; spoke is then identified by its node certificate in the `openclaw devices list` output as a row with role `node`.
 
-### 17.2 Rotation
+### 17.2 Inspecting Pairing State
 
-Annual or on operator change. Re-pairs all spokes. Lobster-wrapped Tier 3 workflow.
+```bash
+openclaw devices list
+```
+
+Shows all paired devices (operators + nodes) with roles, scopes, and last-seen IPs. This is the authoritative source — filesystem state at `/root/.openclaw/devices/paired.json` may diverge from the gateway's running state. Trust the CLI table output.
+
+### 17.3 Rotation
+
+Annual or on operator change. Re-pairs all spokes. Lobster-wrapped Tier 3 workflow (`secret-rotation-spoke.lobster` per §16.4).
 
 ---
 
@@ -1789,16 +2034,16 @@ Annual or on operator change. Re-pairs all spokes. Lobster-wrapped Tier 3 workfl
 | # | Criterion |
 |---|---|
 | MA-01 | WG mesh up; ping each spoke + backend by hostname |
-| MA-02 | Caddy serves all public domains with valid TLS |
-| MA-03 | `mc.virtualcarhub.com` loads fleet console |
+| MA-02 | Caddy serves all configured public domains with valid TLS |
+| MA-03 | `virtualcarhub.cloud` root loads fleet console |
 | MA-04 | `observe.virtualcarhub.cloud` loads Langfuse |
 | MA-05 | `virtualcarhub.cloud/gw` accepts WSS connections |
-| MA-06 | OpenClaw gateway running; `openclaw gateway status` healthy |
-| MA-07 | All spokes (danny, negotiator) paired and visible in fleet console |
-| MA-08 | Master operator pairing token generated and stored in secrets vault |
+| MA-06 | OpenClaw gateway running: `systemctl is-active openclaw-gateway` and `openclaw-gateway-tunnel` both return `active`; `ss -tlnp` shows listeners on `127.0.0.1:18789` and `10.50.0.1:18789` |
+| MA-07 | All spokes (danny, negotiator) paired and visible in `openclaw devices list` and fleet console |
+| MA-08 | Master operator device created and stored in secrets vault (verified via `openclaw devices list` showing role `operator` with full scopes) |
 | MA-09 | Langfuse project created; API keys distributed to agent VPSs |
 | MA-10 | Graphiti reachable at `http://mc-vps:8001/healthcheck` from any WG VPS |
-| MA-11 | FalkorDB running, bound to 127.0.0.1 only |
+| MA-11 | Neo4j running (graphiti-neo4j container), bound to `127.0.0.1:7474, :7687` only |
 | MA-12 | `admin-mc-hub` agent identity exists; visible in `openclaw agents list` |
 | MA-13 | admin-mc-hub workspace has all persona files |
 | MA-14 | All 15 admin-mc-hub skills present; each passes `openclaw skills inspect` |
@@ -1842,7 +2087,8 @@ Annual or on operator change. Re-pairs all spokes. Lobster-wrapped Tier 3 workfl
 - Caddy reverse proxy directive: https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
 - Langfuse self-host compose: https://github.com/langfuse/langfuse/blob/main/docker-compose.yml
 - Graphiti Python client: https://github.com/getzep/graphiti
-- FalkorDB Python client: https://github.com/FalkorDB/falkordb-py
+- Neo4j Python driver: https://neo4j.com/docs/python-manual/current/
+- FalkorDB Python client (alternative backend): https://github.com/FalkorDB/falkordb-py
 - Lobster workflow format: https://docs.openclaw.ai/tools/lobster
 
 ---

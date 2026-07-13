@@ -43,7 +43,7 @@ OpenClaw, the MCP ecosystem, and several other tools in this stack evolve faster
 
 **Rule 1:** If anything in this document conflicts with current behavior on the VPS, or with what the canonical references below say, **current reality wins.** Update the doc and surface the discrepancy to the operator.
 
-**Rule 2:** Before assuming any capability, install pattern, file format, command syntax, or convention for any named tool, **verify against the canonical reference first.** Do not rely on what you "remember" about OpenClaw, MCP, Langfuse, Graphiti, Lobster, Telnyx, Browser Use, GHL, MarketCheck, FalkorDB, Caddy, or anything else in this stack.
+**Rule 2:** Before assuming any capability, install pattern, file format, command syntax, or convention for any named tool, **verify against the canonical reference first.** Do not rely on what you "remember" about OpenClaw, MCP, Langfuse, Graphiti, Lobster, Telnyx, Browser Use, GHL, MarketCheck, Neo4j, FalkorDB, Caddy, or anything else in this stack.
 
 **Rule 3:** When in doubt, run the command and read the output. `openclaw --help`, `openclaw skills list`, `jq '.' /root/.openclaw/openclaw.json`, `openclaw doctor` are your friends. The CLI's actual behavior is authoritative.
 
@@ -99,9 +99,11 @@ OpenClaw, the MCP ecosystem, and several other tools in this stack evolve faster
 - Docs: https://help.getzep.com/graphiti
 - Python client (`graphiti-core`): https://pypi.org/project/graphiti-core/
 
-**FalkorDB (graph database backend for Graphiti)**
+**Neo4j (graph database backend for Graphiti — VCH production choice)**
 
-- Docs: https://docs.falkordb.com
+- Docs: https://neo4j.com/docs/
+- Docker image used: `neo4j:5.26.0`
+- Graphiti supports Neo4j and FalkorDB equally; selection is a driver flag. Neo4j is the deployed VCH choice; FalkorDB (https://docs.falkordb.com) is a supported alternative.
 
 **Browser Use (Negotiator VPS only)**
 
@@ -177,7 +179,7 @@ Six future specialist agents are scoped but not in MVP: Logistics, F&I, Title, C
                   │     • Next.js fleet console    │
                   │     • OpenClaw gateway (hub)   │
                   │     • Langfuse                 │
-                  │     • Graphiti + FalkorDB      │
+                  │     • Graphiti + Neo4j        │
                   │     • Caddy (TLS reverse proxy)│
                   └──────┬───────┬───────┬─────────┘
                          │       │       │
@@ -194,9 +196,11 @@ Six future specialist agents are scoped but not in MVP: Logistics, F&I, Title, C
   │  • api       │         │  • danny     │        │ OpenClaw:    │
   │  • orchestr. │         │  • admin-    │        │  • negotiator│
   │ Postgres     │         │    danny     │        │  • admin-    │
-  │ OpenClaw:    │         │              │        │    negotiator│
-  │  • admin-    │         │              │        │              │
-  │    backend   │         │              │        │ Browser Use  │
+  │              │         │              │        │    negotiator│
+  │ NO OpenClaw  │         │              │        │              │
+  │ (admin via   │         │              │        │ Browser Use  │
+  │  admin-mc-hub│         │              │        │              │
+  │  → HTTP)     │         │              │        │              │
   └──────────────┘         └──────────────┘        └──────────────┘
 ```
 
@@ -480,6 +484,101 @@ Skills' Instructions sections may instruct the agent to call `sessions_spawn` di
 | Anything requiring HITL approval | No — use Lobster instead (§3.8) |
 | Skill composition (one skill calling another's logic) | No — invoke the other skill directly |
 
+### 3.7a — Skill Sharing Across Agents
+
+#### The skill-sharing invariant
+
+OpenClaw 2026.4.14 has no per-agent env-injection mechanism. All agents running on the same daemon share one process environment. Skill subprocesses inherit that environment when they execute. There is no `(skill, agent) → env` lookup at invocation time.
+
+This means: if a shared skill needs different credentials per invoking agent, **the skill itself cannot dynamically receive them**. The credential delivery must happen at a layer the skill controls — its own script, hardcoded to read a specific env variable.
+
+#### Sanitize-env-vars denylist (hard architectural constraint)
+
+`skills.entries.<name>.env` **cannot** be used to override credential-pattern environment variables. OpenClaw enforces a denylist (`sanitize-env-vars-DAQHLAex.js`) that blocks any destination env var whose name matches:
+
+```
+/_?(API_KEY|TOKEN|PASSWORD|PRIVATE_KEY|SECRET)$/i
+```
+
+plus a set of explicit provider keys. Attempts to inject credentials via `skills.entries.<name>.env` are silently dropped with a `[env-overrides] Blocked skill env overrides for X: Y` log line. This is intentional: OpenClaw treats credentials as daemon-managed; skill-level config cannot override them.
+
+The architectural consequence: credentials live in the daemon's process env (loaded from systemd `EnvironmentFile` entries) and reach skills only through subprocess inheritance.
+
+#### Per-agent token isolation pattern (Option E — canonical)
+
+1. **Uniquely name per-agent credentials** in their respective env files. Never name two agents' tokens the same.
+   - `/etc/danny.env`: `DANNY_BACKEND_TOKEN=...`
+   - `/etc/admin-danny.env`: `ADMIN_DANNY_BACKEND_TOKEN=...`
+
+2. **Load both into the daemon** via systemd `EnvironmentFile=-/etc/<agent>.env` drop-ins. The daemon's process env contains both. They don't shadow each other because their names differ.
+
+3. **Each skill's `scripts/run.sh` hardcodes the variable name** that matches the agent it serves. The skill's name encodes its agent scope; the script's first line picks up the right token.
+
+   ```sh
+   # workspace-danny/skills/vch-foo-skill-danny/scripts/run.sh
+   TOKEN="${DANNY_BACKEND_TOKEN:?DANNY_BACKEND_TOKEN not set}"
+
+   # workspace-admin-danny/skills/vch-foo-skill-admin-danny/scripts/run.sh
+   TOKEN="${ADMIN_DANNY_BACKEND_TOKEN:?ADMIN_DANNY_BACKEND_TOKEN not set}"
+   ```
+
+4. **Skill allowlists are disjoint per agent.** Each skill name maps to exactly one agent, so the hardcoded var name is unambiguous.
+
+#### When sharing is safe (no auth)
+
+A skill can be listed in multiple agents' allowlists when:
+- It uses no credentials at all, OR
+- It uses credentials that are agent-independent (e.g., a shared public-API call)
+
+Examples: unit conversion, VIN decode via NHTSA vPIC, HTML rendering, format utilities.
+
+#### When sharing breaks — split the skill
+
+If a logically-shared operation requires per-agent credentials or per-agent audit attribution, **do not share the skill**. Split it into agent-specific variants, each living in its respective agent's workspace, each hardcoding its agent's token variable.
+
+Variants share behavior via:
+- Symlinked or copied `scripts/run.sh` (identical logic; only the env var name at the top differs)
+- A shared library module imported by both scripts
+- Hand-maintained parallel files for minor divergence
+
+#### Naming convention
+
+For agent-specific variants of a logically-shared skill:
+
+```
+<base-skill-name>-<agent-id>
+```
+
+Examples:
+- `vch-diagnostic-token-scoping-danny`
+- `vch-diagnostic-token-scoping-admin-danny`
+- `vch-diagnostic-token-scoping-admin-mc-hub`
+
+This keeps the base name searchable, makes the agent scope visible in the file path, and disambiguates downstream audit log attribution.
+
+#### Decision rule
+
+Before adding a skill to more than one agent's allowlist:
+
+1. Does this skill make any authenticated call to backend? → **split**
+2. Does this skill use GHL, MarketCheck, Telnyx, or any other auth'd MCP? → **split**
+3. Does any downstream system attribute actions by agent identity (audit logs, rate-limit counters, the `audit_log` table)? → **split**
+4. None of the above → safe to share
+
+When in doubt, split. The cost of a duplicate skill is low; the cost of credential bleed across agent boundaries is structural.
+
+#### Anti-pattern — runtime agent detection
+
+Do not try to make a shared skill detect which agent invoked it (e.g., by reading some `OPENCLAW_AGENT_ID` env var and selecting a token at runtime). OpenClaw 2026.4.14 does not expose agent identity to skill execution env reliably, and credential vars cannot be selected dynamically by skill code in any race-free way. Architectural separation must happen at the skill-name layer through configuration, not in skill logic.
+
+#### Anti-pattern — `skills.entries.<name>.env` for credentials
+
+Do not attempt to inject auth tokens, API keys, or other credentials via `skills.entries.<name>.env`. OpenClaw will silently block the override via the sanitize-env-vars denylist. Credentials must come from the daemon's process env via systemd `EnvironmentFile`.
+
+#### Canonical first instance
+
+The first deployment instance of this pattern is the `vch-diagnostic-token-scoping-{danny, admin-danny}` pair built during Danny VPS D-D-pilot. The OpenClaw architecture investigation that surfaced the denylist constraint and validated Option E is recorded in the v7.2 doc-deltas tracker (items #8, #9, #11, #12).
+
 ### 3.8 Lobster Workflows for HITL Pipelines
 
 Lobster is OpenClaw's YAML workflow engine. VCH uses Lobster **specifically for HITL pipelines and audit-heavy multi-step processes**. Not for everything.
@@ -630,12 +729,13 @@ Each VPS also runs an admin agent with operator-facing scope. Admin agents are d
 
 | Admin agent ID | VPS | Purpose |
 |---|---|---|
-| `admin-mc-hub` | Mission Control | Fleet coordination, cross-VPS oversight |
-| `admin-backend` | Backend | Database health, service status, deploy gates |
+| `admin-mc-hub` | Mission Control | Fleet coordination, cross-VPS oversight, **backend admin operations** (database health, audit queries, service status, migration status — all via backend HTTP admin endpoints) |
 | `admin-danny` | Danny VPS | Danny VPS health, drift detection, secret rotation, deploy gates |
 | `admin-negotiator` | Negotiator VPS | Same shape as admin-danny |
 
-Admin agents share a small core skill catalog (system-health-check, config-drift-detect, secret-rotation-propose, deploy-gate-check) plus per-VPS specifics. Their full setup is in the per-VPS implementation docs.
+**Note on backend admin operations:** The Backend VPS does NOT host OpenClaw or an admin agent. It is pure FastAPI + Postgres + orchestrator infrastructure. All backend administration is performed by `admin-mc-hub` (on Mission Control) calling the backend's `/v1/admin-actions/*` HTTP endpoints. This minimizes attack surface on the database host and keeps the backend operationally simpler. The "admin agent per VPS" pattern applies to agent VPSs (Danny, Negotiator, future specialists) — those have local agent runtime state worth administering with a local agent. The backend has no such local state.
+
+Admin agents share a small core skill catalog (system-health-check, config-drift-detect, secret-rotation-propose, deploy-gate-check) plus per-VPS specifics. `admin-mc-hub` additionally owns the backend admin skill catalog. Full setup is in the per-VPS implementation docs.
 
 ### 4.3 Future Specialist Agents (Headroom)
 
@@ -685,9 +785,9 @@ Next.js admin UI accessible at `mc.virtualcarhub.com`. Provides:
 
 Langfuse is deployed on MC, exposed via Caddy at `https://observe.virtualcarhub.cloud`. All agents (production + admin) trace to this single instance. Trace conventions in §9.
 
-### 5.4 Graphiti + FalkorDB (Shared Knowledge Graph)
+### 5.4 Graphiti + Neo4j (Shared Knowledge Graph)
 
-Graphiti runs on MC at `http://mc-vps:8001` (WG-only). Provides temporal knowledge graph for shared agent memory. Used for:
+Graphiti runs on MC at `http://mc-vps:8001` (WG-only, REST API) and `http://mc-vps:8002` (WG-only, MCP-compatible interface). Backed by Neo4j 5.26 (the deployed choice; FalkorDB is also supported via driver flag). Provides temporal knowledge graph for shared agent memory. Used for:
 
 - Long-term buyer preferences and history (across multiple deals)
 - Dealer reputation and prior negotiation outcomes
@@ -766,7 +866,7 @@ Full endpoint specs in the Backend + MC implementation doc.
 
 | Service | Purpose | Status |
 |---|---|---|
-| **Telnyx** | Voice + SMS + MMS + fax | **Authoritative voice/SMS provider — NOT Twilio.** Older docs may have referenced Twilio; v7 uses Telnyx exclusively. |
+| **Telnyx** | Voice + SMS + MMS + fax | **Authoritative voice/SMS provider — NOT Twilio.** Older docs may have referenced Twilio; v7 uses Telnyx exclusively. **Channel-ownership note (2026-06-22 override):** live **voice** is owned by the **Danny node**, not MC. Chosen mechanism (not yet built): a node-side OpenAI-compatible streaming endpoint exposing the local `danny` agent as a **Custom LLM** to a **Telnyx AI Assistant** (Telnyx does STT/TTS + call control). The OpenClaw `voice-call` plugin path was attempted and reverted (gateway-hosted webhook can't bind on a remote node; the gateway doesn't dispatch agent turns to nodes). Public door `voice.bdcagent.cloud → 187.77.207.153`. SMS/MMS still proxy through the backend. See [docs/voice-on-danny-v7-override-2026-06-22-new.md](../voice-on-danny-v7-override-2026-06-22-new.md) §7. |
 | **GoHighLevel (GHL)** | CRM, contact records, conversation history, campaigns, scheduled comms | Hosted MCP at `services.leadconnectorhq.com/mcp/` (36 tools at sub-account PIT auth) |
 
 ### 7.2 Vehicle Data
@@ -932,8 +1032,8 @@ The build is sequenced across six phases. Each phase has clear acceptance before
 | WireGuard mesh operational across all four VPSs | `wg show` confirms all peers; ping by hostname works |
 | Caddy on MC routing public domains | mc.virtualcarhub.com loads; observe.virtualcarhub.cloud serves Langfuse |
 | Langfuse deployed and accessible | Project created; SDK key generated |
-| Graphiti + FalkorDB running on MC | `curl http://mc-vps:8001/healthcheck` returns 200 |
-| OpenClaw gateway running on MC | `openclaw gateway status` shows running |
+| Graphiti + Neo4j running on MC | `curl http://mc-vps:8001/healthcheck` returns 200 |
+| OpenClaw gateway running on MC | `systemctl is-active openclaw-gateway` returns `active`; `ss -tlnp` shows listener on `:18789` |
 | OpenClaw daemon installed and paired on all agent VPSs | `openclaw doctor` shows healthy on each spoke |
 | Backend `api.service` running, reachable at `http://backend-vps:8000` | `curl http://backend-vps:8000/healthcheck` returns 200 from any VPS |
 | `/etc/hosts` populated on every VPS with all four WG names | `ping mc-vps`, `ping backend-vps` etc. resolve |
@@ -944,7 +1044,7 @@ The build is sequenced across six phases. Each phase has clear acceptance before
 |---|---|
 | `danny` agent identity configured on Danny VPS | `openclaw agents list` shows danny |
 | `negotiator` agent identity configured on Negotiator VPS | Same |
-| `admin-mc-hub`, `admin-backend`, `admin-danny`, `admin-negotiator` configured | Each visible via `openclaw agents list` on its VPS |
+| `admin-mc-hub`, `admin-danny`, `admin-negotiator` configured | Each visible via `openclaw agents list` on its VPS |
 | Persona files (AGENTS.md, SOUL.md, USER.md, IDENTITY.md) present in every agent's workspace | Files exist with correct content |
 | Telegram bindings to admin agents established | `openclaw agents bindings` shows them |
 | Web widget binding to Danny established | Same |
@@ -1048,7 +1148,7 @@ These are the high-level checks that verify the fleet is ready for agent work. D
 | FA-09 | GHL MCP responds to a sample `tools/list` call from Danny + Negotiator VPSs |
 | FA-10 | MarketCheck MCP responds to a sample call from Negotiator VPS |
 | FA-11 | Telnyx credentials valid (verified by SDK auth check) |
-| FA-12 | All six agent identities (danny, negotiator, admin-mc-hub, admin-backend, admin-danny, admin-negotiator) exist in their respective `openclaw.json` |
+| FA-12 | All five agent identities (danny, negotiator, admin-mc-hub, admin-danny, admin-negotiator) exist in their respective `openclaw.json`. Backend VPS does NOT host OpenClaw |
 | FA-13 | All persona files (AGENTS.md, SOUL.md, USER.md, IDENTITY.md) present in each agent's workspace |
 | FA-14 | All skill catalogs present and pass `openclaw skills inspect` |
 | FA-15 | Each agent's effective tool surface (after skill allowlist + tool policy) verified via `openclaw tools --agent <id>` |
