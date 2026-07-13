@@ -58,3 +58,6 @@ handoff/wireguard/apply-*.sh
 
 # Personal IDE workspace (VS Code multi-root)
 docs/architecture/root.code-workspace
+
+# Temporarily excluded; will be superseded by v7 VPS bootstrap docs — revisit
+handoff/
