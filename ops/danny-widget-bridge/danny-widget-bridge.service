@@ -1,0 +1,29 @@
+[Unit]
+Description=Danny Widget Bridge — inbound HTTP receiver for buyer widget messages
+Documentation=https://docs.openclaw.ai/cli
+After=network-online.target openclaw-gateway-tunnel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/danny-widget-bridge.env
+ExecStart=/usr/bin/python3 -u /opt/danny-widget-bridge/bridge.py
+Restart=on-failure
+RestartSec=3
+User=root
+Group=root
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/danny-widget-bridge /var/lib/danny-widget-bridge
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictRealtime=true
+SystemCallArchitectures=native
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
