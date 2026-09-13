@@ -1,5 +1,5 @@
 import { getGraphitiConfig, isGraphitiConfigured, type GraphitiConfig } from './config'
-import type { VchNamespace } from './namespaces'
+import { readableNamespaces, type VchNamespace, type VchReadMode } from './namespaces'
 import type { GraphitiConflict, GraphitiEpisode, GraphitiFact, GraphitiGraph, GraphitiHealth, GraphitiStats } from './types'
 
 type FetchJsonOptions = {
@@ -221,6 +221,50 @@ export class GraphitiClient {
         raw_episode: episode.raw,
       })
     })
+  }
+
+  // ── Mode-scoped reads ───────────────────────────────────────────────
+  // These fan a read across exactly the namespaces the mode is allowed to see
+  // (see READ_POLICY in ./namespaces). Writes stay single-namespace; only reads
+  // widen, and only as far as the policy permits.
+
+  async searchAcross(mode: VchReadMode, query: string, maxFacts = 10): Promise<GraphitiFact[]> {
+    const namespaces = readableNamespaces(mode)
+    const payload = asRecord(await this.fetchJson('/search', {
+      method: 'POST',
+      body: {
+        group_ids: [...namespaces],
+        query,
+        max_facts: Math.max(1, Math.min(50, Math.floor(maxFacts))),
+      },
+    }))
+    const facts = Array.isArray(payload.facts) ? payload.facts : []
+    // Same belt-and-braces enforcement as the single-namespace path: the server
+    // filter via group_ids is primary, this drops anything outside the policy.
+    const allowed = new Set<string>(namespaces)
+    return facts.map(normalizeFact).filter((fact) => {
+      const factGroup = pickString(asRecord(fact.raw).group_id, asRecord(fact.raw).groupId)
+      return factGroup === null || allowed.has(factGroup)
+    })
+  }
+
+  async recentFactsAcross(mode: VchReadMode, limit = 50): Promise<GraphitiFact[]> {
+    const namespaces = readableNamespaces(mode)
+    const capped = Math.max(1, Math.min(200, Math.floor(limit)))
+    // /episodes/{group_id} is path-scoped, so fan out and merge. Pull the full
+    // limit per namespace, then sort and trim, so one busy namespace cannot
+    // starve another out of the result.
+    const perNamespace = await Promise.all(
+      namespaces.map((namespace) => this.recentFacts(namespace, capped).catch(() => [] as GraphitiFact[])),
+    )
+    return perNamespace
+      .flat()
+      .sort((a, b) => {
+        const at = a.createdAt || a.validAt || ''
+        const bt = b.createdAt || b.validAt || ''
+        return bt.localeCompare(at)
+      })
+      .slice(0, capped)
   }
 
   async stats(namespace: VchNamespace): Promise<GraphitiStats> {
