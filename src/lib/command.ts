@@ -1,3 +1,4 @@
+import { loadGatewayEnv, mergeGatewayEnv } from '@/lib/gateway-env'
 import { spawn } from 'node:child_process'
 import { config } from './config'
 
@@ -30,9 +31,11 @@ export function runCommand(
     let stdout = ''
     let stderr = ''
     let timeoutId: NodeJS.Timeout | undefined
+    let timedOut = false
 
     if (options.timeoutMs) {
       timeoutId = setTimeout(() => {
+        timedOut = true
         child.kill('SIGKILL')
       }, options.timeoutMs)
     }
@@ -60,12 +63,16 @@ export function runCommand(
         resolve({ stdout, stderr, code })
         return
       }
+      const label = `${command} ${args.join(' ')}`
       const error = new Error(
-        `Command failed (${command} ${args.join(' ')}): ${stderr || stdout}`
+        timedOut
+          ? `Command timed out after ${options.timeoutMs}ms (${label})`
+          : `Command failed (${label}): ${stderr || stdout}`
       )
       ;(error as any).stdout = stdout
       ;(error as any).stderr = stderr
       ;(error as any).code = code
+      ;(error as any).timedOut = timedOut
       reject(error)
     })
 
@@ -76,13 +83,22 @@ export function runCommand(
   })
 }
 
+/** True when a runCommand rejection was caused by its timeoutMs elapsing. */
+export function isCommandTimeout(error: unknown): boolean {
+  return Boolean((error as { timedOut?: boolean } | null)?.timedOut)
+}
+
 export function runOpenClaw(args: string[], options: CommandOptions = {}) {
   // Explicitly pass OPENCLAW_STATE_DIR so the CLI uses the exact resolved path.
   // Without this, the CLI may interpret OPENCLAW_HOME as a parent directory and
   // append ".openclaw" to it — causing double-nesting when OPENCLAW_HOME is
   // already set to the state directory (e.g. /root/.openclaw → /root/.openclaw/.openclaw).
+  // Gateway EnvironmentFiles fill gaps so spawned CLIs evaluate the same
+  // config the running gateway does (otherwise doctor reports every
+  // env-referenced MCP secret as "Missing env var"). MC's own environment
+  // takes precedence — some keys legitimately differ between the services.
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...mergeGatewayEnv(loadGatewayEnv(), process.env),
     OPENCLAW_STATE_DIR: config.openclawStateDir,
     ...options.env,
   }

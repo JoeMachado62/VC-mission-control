@@ -1,11 +1,16 @@
 import { NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { runOpenClaw } from '@/lib/command'
+import { runOpenClaw, isCommandTimeout } from '@/lib/command'
 import { config } from '@/lib/config'
 import { getDatabase } from '@/lib/db'
 import { logger } from '@/lib/logger'
 import { archiveOrphanTranscriptsForStateDir } from '@/lib/openclaw-doctor-fix'
 import { parseOpenClawDoctorOutput } from '@/lib/openclaw-doctor'
+
+// `openclaw doctor` routinely takes 13-17s here (it probes MCP servers); the
+// previous 15s budget made this endpoint flap between findings and a false
+// "not installed" error. Matches the POST fix path's generous budget in spirit.
+const DOCTOR_TIMEOUT_MS = 60_000
 
 function getCommandDetail(error: unknown): { detail: string; code: number | null } {
   const err = error as {
@@ -21,7 +26,15 @@ function getCommandDetail(error: unknown): { detail: string; code: number | null
   }
 }
 
-function isMissingOpenClaw(detail: string): boolean {
+/**
+ * Only treat the CLI as missing when it produced no output at all. Doctor's own
+ * findings legitimately contain phrases like "not installed" (e.g. the Codex
+ * plugin hint) and must never be mistaken for a missing binary.
+ */
+function isMissingOpenClaw(error: unknown, detail: string): boolean {
+  const err = error as { stdout?: string; code?: unknown } | null
+  if (err?.code === 'ENOENT') return true
+  if (err?.stdout && err.stdout.trim()) return false
   return /enoent|not installed|not reachable|command not found/i.test(detail)
 }
 
@@ -32,15 +45,21 @@ export async function GET(request: Request) {
   }
 
   try {
-    const result = await runOpenClaw(['doctor'], { timeoutMs: 15000 })
+    const result = await runOpenClaw(['doctor'], { timeoutMs: DOCTOR_TIMEOUT_MS })
     return NextResponse.json(parseOpenClawDoctorOutput(`${result.stdout}\n${result.stderr}`, result.code ?? 0, {
       stateDir: config.openclawStateDir,
     }), {
       headers: { 'Cache-Control': 'no-store' },
     })
   } catch (error) {
+    if (isCommandTimeout(error)) {
+      return NextResponse.json(
+        { error: `OpenClaw doctor timed out after ${DOCTOR_TIMEOUT_MS / 1000}s` },
+        { status: 504 }
+      )
+    }
     const { detail, code } = getCommandDetail(error)
-    if (isMissingOpenClaw(detail)) {
+    if (isMissingOpenClaw(error, detail)) {
       return NextResponse.json({ error: 'OpenClaw is not installed or not reachable' }, { status: 400 })
     }
 
@@ -61,7 +80,7 @@ export async function POST(request: Request) {
   try {
     const progress: Array<{ step: string; detail: string }> = []
 
-    const preFix = await runOpenClaw(['doctor'], { timeoutMs: 15000 })
+    const preFix = await runOpenClaw(['doctor'], { timeoutMs: DOCTOR_TIMEOUT_MS })
     const preStatus = parseOpenClawDoctorOutput(`${preFix.stdout}\n${preFix.stderr}`, preFix.code ?? 0, {
       stateDir: config.openclawStateDir,
     })
@@ -99,7 +118,7 @@ export async function POST(request: Request) {
           : `No orphan transcript files found across ${orphanFix.storesScanned} session store(s).`,
     })
 
-    const postFix = await runOpenClaw(['doctor'], { timeoutMs: 15000 })
+    const postFix = await runOpenClaw(['doctor'], { timeoutMs: DOCTOR_TIMEOUT_MS })
     const status = parseOpenClawDoctorOutput(`${postFix.stdout}\n${postFix.stderr}`, postFix.code ?? 0, {
       stateDir: config.openclawStateDir,
     })
@@ -125,7 +144,7 @@ export async function POST(request: Request) {
     })
   } catch (error) {
     const { detail, code } = getCommandDetail(error)
-    if (isMissingOpenClaw(detail)) {
+    if (isMissingOpenClaw(error, detail)) {
       return NextResponse.json({ error: 'OpenClaw is not installed or not reachable' }, { status: 400 })
     }
 
