@@ -14,6 +14,7 @@ import {
 import { APP_VERSION } from '@/lib/version'
 import { createClientLogger } from '@/lib/client-logger'
 import {
+  buildProtocolNegotiation,
   ConnectErrorDetailCodes,
   readErrorDetailCode,
   NON_RETRYABLE_ERROR_CODES,
@@ -22,8 +23,6 @@ import {
 
 const log = createClientLogger('WebSocket')
 
-// Gateway protocol version (v3 required by OpenClaw 2026.x)
-const PROTOCOL_VERSION = 3
 const DEFAULT_GATEWAY_CLIENT_ID = process.env.NEXT_PUBLIC_GATEWAY_CLIENT_ID || 'openclaw-control-ui'
 
 // Heartbeat configuration
@@ -299,8 +298,7 @@ export function useWebSocket() {
       method: 'connect',
       id: nextRequestId(),
       params: {
-        minProtocol: PROTOCOL_VERSION,
-        maxProtocol: PROTOCOL_VERSION,
+        ...buildProtocolNegotiation(),
         client: {
           id: clientId,
           displayName: 'Mission Control',
