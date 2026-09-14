@@ -111,7 +111,8 @@
     },
     "collapseSidebar": "Seitenleiste einklappen",
     "expandSidebar": "Seitenleiste ausklappen",
-    "more": "Mehr"
+    "more": "Mehr",
+    "logout": "Abmelden"
   },
   "settings": {
     "language": "Sprache",
@@ -747,13 +748,17 @@
     "spawnSubAgent": "Unteragent erstellen",
     "newTask": "Neue Aufgabe",
     "refresh": "Aktualisieren",
+    "loadingTasks": "Aufgaben werden geladen...",
     "spawnAgentPlaceholder": "Agentenname",
     "spawnTaskPlaceholder": "Aufgabenbeschreibung",
+    "spawnLabelPlaceholder": "Aufgabenbezeichnung",
     "timeoutTitle": "Timeout (Minuten)",
+    "timeoutSeconds": "Timeout (Sekunden)",
     "spawning": "Erstellen...",
     "spawn": "Erstellen",
     "noActiveSpawnRequests": "Keine aktiven Erstellungsanfragen",
     "dismissError": "Fehler schließen",
+    "taskBoard": "Aufgabentafel",
     "taskBoardAriaLabel": "Aufgabentafel",
     "columnAriaLabel": "Spalte {title}, {count} Aufgaben",
     "colBacklog": "Backlog",
@@ -855,6 +860,7 @@
     "today": "Heute",
     "next": "Weiter",
     "calMode_agenda": "Agenda",
+    "calMode_day": "Tag",
     "calMode_week": "Woche",
     "calMode_month": "Monat",
     "searchPlaceholder": "Jobs suchen...",
@@ -1160,7 +1166,15 @@
     "decommissionQueuedDryRun": "Probelauf-Stilllegung für {slug} eingereiht",
     "decommissionQueued": "Stilllegung für {slug} eingereiht",
     "optionalReason": "Optionale Begründung für {action}:",
-    "jobActioned": "Job #{jobId} wurde {action}"
+    "jobActioned": "Job #{jobId} wurde {action}",
+    "workspaceFieldsTitle": "Workspaces",
+    "workspaceFieldsDesc": "Brand-Tag und Agenten-Speicher-Isolation pro Workspace.",
+    "workspaceBrandPlaceholder": "Brand (optional)",
+    "isolationShared": "Geteilt",
+    "isolationStrict": "Strikt",
+    "save": "Speichern",
+    "saving": "Speichert...",
+    "workspaceFieldsSaved": "Workspace {name} aktualisiert"
   },
   "auditTrail": {
     "title": "Prüfprotokoll",

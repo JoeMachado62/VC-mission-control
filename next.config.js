@@ -3,10 +3,46 @@ const withNextIntl = require('next-intl/plugin')('./src/i18n/request.ts')
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
-  outputFileTracingExcludes: {
-    '/*': ['./.data/**/*'],
+  outputFileTracingRoot: __dirname,
+  outputFileTracingIncludes: {
+    // These files are read from process.cwd() at runtime and therefore cannot
+    // be discovered reliably by static output tracing.
+    '/*': [
+      './openapi.json',
+      './ops/templates/openclaw-gateway@.service',
+      './src/lib/schema.sql',
+    ],
   },
-  turbopack: {},
+  outputFileTracingExcludes: {
+    // `.git` must be excluded so the Next.js file tracer does not copy the
+    // entire repo .git directory into `.next/standalone/`. When it does,
+    // Git treats the standalone dir as its own working tree and the
+    // self-update endpoint's `git status --porcelain` (run from
+    // process.cwd() under `pnpm start:standalone`) reports every file the
+    // standalone build doesn't bundle (e.g. `src/lib/__tests__/`) as
+    // deleted — blocking the dirty-tree check and breaking self-update.
+    '/*': [
+      './.data/**/*',
+      './.devgod/**/*',
+      './.git/**/*',
+      './.github/**/*',
+      './docs/**/*',
+      './examples/**/*',
+      './tests/**/*',
+      './wiki/**/*',
+      './src/**/*.test.*',
+      './src/**/__tests__/**/*',
+      './.env*',
+      './playwright*.ts',
+      './vitest.config.ts',
+      './eslint.config.mjs',
+      './tsconfig*.json',
+      './tsconfig.tsbuildinfo',
+    ],
+  },
+  turbopack: {
+    root: __dirname,
+  },
   // Transpile ESM-only packages so they resolve correctly in all environments
   transpilePackages: ['react-markdown', 'remark-gfm'],
   

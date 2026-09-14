@@ -3,6 +3,9 @@ import { NextRequest } from 'next/server'
 
 const runCommandMock = vi.fn()
 const loggerErrorMock = vi.fn()
+const getAllGatewaySessionsMock = vi.fn(() => [])
+const getAgentLiveStatusesMock = vi.fn(() => [])
+const isolationMock = vi.fn(() => 'shared')
 
 vi.mock('@/lib/auth', () => ({
   requireRole: vi.fn(() => ({ user: { role: 'viewer', workspace_id: 1 } })),
@@ -24,7 +27,10 @@ vi.mock('@/lib/config', () => ({
 }))
 
 vi.mock('@/lib/db', () => ({ getDatabase: vi.fn() }))
-vi.mock('@/lib/sessions', () => ({ getAllGatewaySessions: vi.fn(() => []), getAgentLiveStatuses: vi.fn(() => []) }))
+vi.mock('@/lib/sessions', () => ({
+  getAllGatewaySessions: getAllGatewaySessionsMock,
+  getAgentLiveStatuses: getAgentLiveStatusesMock,
+}))
 vi.mock('@/lib/provider-subscriptions', () => ({
   detectProviderSubscriptions: vi.fn(() => ({})),
   getPrimarySubscription: vi.fn(() => null),
@@ -32,6 +38,7 @@ vi.mock('@/lib/provider-subscriptions', () => ({
 vi.mock('@/lib/version', () => ({ APP_VERSION: 'test' }))
 vi.mock('@/lib/hermes-sessions', () => ({ isHermesInstalled: vi.fn(() => false), scanHermesSessions: vi.fn(() => []) }))
 vi.mock('@/lib/gateway-runtime', () => ({ registerMcAsDashboard: vi.fn() }))
+vi.mock('@/lib/workspace-isolation', () => ({ getWorkspaceIsolation: isolationMock }))
 vi.mock('@/lib/logger', () => ({ logger: { error: loggerErrorMock, info: vi.fn(), warn: vi.fn() } }))
 vi.mock('@/lib/models', () => ({
   MODEL_CATALOG: [
@@ -40,7 +47,7 @@ vi.mock('@/lib/models', () => ({
       name: 'openai/gpt-4.1-mini',
       provider: 'openai',
       description: 'baseline',
-      costPer1k: 0.001,
+      costPerMTok: { input: 0.4, output: 1.6 },
     },
   ],
 }))
@@ -49,6 +56,7 @@ describe('status route Ollama model discovery', () => {
   beforeEach(() => {
     vi.resetModules()
     vi.clearAllMocks()
+    isolationMock.mockReturnValue('shared')
   })
 
   afterEach(() => {
@@ -93,5 +101,18 @@ describe('status route Ollama model discovery', () => {
     expect(response.status).toBe(200)
     expect(payload.models.some((m) => m.name === 'openai/gpt-4.1-mini')).toBe(true)
     expect(loggerErrorMock).toHaveBeenCalled()
+  })
+
+  it('does not inspect deployment-global session stores for a strict workspace', async () => {
+    isolationMock.mockReturnValue('strict')
+    runCommandMock.mockRejectedValue(new Error('unavailable in test'))
+
+    const { GET } = await import('@/app/api/status/route')
+    const response = await GET(new NextRequest('http://localhost/api/status?action=overview'))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({ sessions: { total: 0, active: 0 } })
+    expect(getAllGatewaySessionsMock).not.toHaveBeenCalled()
+    expect(getAgentLiveStatusesMock).not.toHaveBeenCalled()
   })
 })

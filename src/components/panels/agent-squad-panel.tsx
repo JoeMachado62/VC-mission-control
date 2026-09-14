@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
+import { apiFetch } from '@/lib/api-client'
 import { createClientLogger } from '@/lib/client-logger'
 
 const log = createClientLogger('AgentSquadPanel')
@@ -58,17 +59,14 @@ export function AgentSquadPanel() {
       setError(null)
       if (agents.length === 0) setLoading(true)
 
-      const response = await fetch('/api/agents')
-      if (!response.ok) throw new Error(t('failedToFetch'))
-
-      const data = await response.json()
+      const data = await apiFetch<{ agents: Agent[] }>('/api/agents')
       setAgents(data.agents || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : t('errorOccurred'))
     } finally {
       setLoading(false)
     }
-  }, [agents.length])
+  }, [agents.length, t])
 
   // Initial load
   useEffect(() => {
@@ -86,17 +84,14 @@ export function AgentSquadPanel() {
   // Update agent status
   const updateAgentStatus = async (agentName: string, status: Agent['status'], activity?: string) => {
     try {
-      const response = await fetch('/api/agents', {
+      await apiFetch('/api/agents', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: agentName,
           status,
           last_activity: activity || `Status changed to ${status}`
         })
       })
-
-      if (!response.ok) throw new Error(t('failedToUpdateStatus'))
 
       // Update local state
       setAgents(prev => prev.map(agent =>
@@ -351,20 +346,18 @@ function AgentDetailModal({
     role: agent.role,
     session_key: agent.session_key || '',
     soul_content: agent.soul_content || '',
+    runtime_type: agent.runtime_type || '',
   })
 
   const handleSave = async () => {
     try {
-      const response = await fetch('/api/agents', {
+      await apiFetch('/api/agents', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: agent.name,
           ...formData
         })
       })
-
-      if (!response.ok) throw new Error(t('failedToUpdate'))
       
       setEditing(false)
       onUpdate()
@@ -415,7 +408,7 @@ function AgentDetailModal({
                   type="text"
                   value={formData.role}
                   onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-                  className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               ) : (
                 <p className="text-white">{agent.role}</p>
@@ -429,10 +422,30 @@ function AgentDetailModal({
                   type="text"
                   value={formData.session_key}
                   onChange={(e) => setFormData(prev => ({ ...prev, session_key: e.target.value }))}
-                  className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 />
               ) : (
                 <p className="text-white font-mono">{agent.session_key || t('notSet')}</p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1">{t('runtimeType')}</label>
+              {editing ? (
+                <select
+                  value={formData.runtime_type}
+                  onChange={(e) => setFormData(prev => ({ ...prev, runtime_type: e.target.value }))}
+                  className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">{t('runtimeTypeAuto')}</option>
+                  <option value="hermes">Hermes Agent</option>
+                  <option value="openclaw">OpenClaw</option>
+                  <option value="claude">Claude Code</option>
+                  <option value="codex">Codex CLI</option>
+                  <option value="custom">{t('runtimeTypeCustom')}</option>
+                </select>
+              ) : (
+                <p className="text-white font-mono">{agent.runtime_type || t('notSet')}</p>
               )}
             </div>
 
@@ -443,7 +456,7 @@ function AgentDetailModal({
                   value={formData.soul_content}
                   onChange={(e) => setFormData(prev => ({ ...prev, soul_content: e.target.value }))}
                   rows={4}
-                  className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                   placeholder={t('soulPlaceholder')}
                 />
               ) : (
@@ -543,16 +556,13 @@ function CreateAgentModal({
     e.preventDefault()
     
     try {
-      const response = await fetch('/api/agents', {
+      await apiFetch('/api/agents', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...formData,
           runtime_type: formData.runtime_type || undefined,
         })
       })
-
-      if (!response.ok) throw new Error(t('failedToCreate'))
       
       onCreated()
       onClose()
@@ -574,7 +584,7 @@ function CreateAgentModal({
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 required
               />
             </div>
@@ -585,7 +595,7 @@ function CreateAgentModal({
                 type="text"
                 value={formData.role}
                 onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 placeholder={t('rolePlaceholder')}
                 required
               />
@@ -596,7 +606,7 @@ function CreateAgentModal({
               <select
                 value={formData.runtime_type}
                 onChange={(e) => setFormData(prev => ({ ...prev, runtime_type: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">{t('runtimeTypeAuto')}</option>
                 <option value="hermes">Hermes Agent</option>
@@ -613,7 +623,7 @@ function CreateAgentModal({
                 type="text"
                 value={formData.session_key}
                 onChange={(e) => setFormData(prev => ({ ...prev, session_key: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 placeholder={t('sessionKeyPlaceholder')}
               />
             </div>
@@ -623,7 +633,7 @@ function CreateAgentModal({
               <textarea
                 value={formData.soul_content}
                 onChange={(e) => setFormData(prev => ({ ...prev, soul_content: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                 rows={3}
                 placeholder={t('soulPlaceholder')}
               />

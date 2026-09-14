@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const requireRoleMock = vi.fn()
+const isolationDenyMock = vi.fn()
 const wsServers: any[] = []
 
 vi.mock('@/lib/auth', () => ({
   requireRole: requireRoleMock,
+}))
+
+vi.mock('@/lib/workspace-isolation', () => ({
+  denyUnscopedResourceForStrictWorkspace: isolationDenyMock,
 }))
 
 vi.mock('ws', () => {
@@ -44,6 +49,8 @@ describe('handlePtyUpgrade auth and validation', () => {
   beforeEach(() => {
     vi.resetModules()
     requireRoleMock.mockReset()
+    isolationDenyMock.mockReset()
+    isolationDenyMock.mockReturnValue(null)
     wsServers.length = 0
   })
 
@@ -113,6 +120,28 @@ describe('handlePtyUpgrade auth and validation', () => {
     expect(requireRoleMock.mock.calls[0][1]).toBe('operator')
     expect(String(socket.write.mock.calls[0][0])).toContain('403 Forbidden')
     expect(socket.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('rejects a strict workspace before attaching to a global PTY session', async () => {
+    requireRoleMock.mockReturnValue({ user: { role: 'admin', workspace_id: 7, tenant_id: 1 } })
+    isolationDenyMock.mockReturnValue({ status: 403 })
+    const { handlePtyUpgrade } = await import('@/lib/pty-websocket')
+    const socket = makeSocket()
+
+    const handled = handlePtyUpgrade(
+      { url: '/ws/pty?session=s1&kind=claude-code&mode=readonly', headers: { host: 'localhost:3000' }, method: 'GET', socket: {} } as any,
+      socket as any,
+      Buffer.alloc(0),
+    )
+
+    expect(handled).toBe(true)
+    expect(isolationDenyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ workspace_id: 7 }),
+      'terminal_sessions',
+      '/ws/pty',
+    )
+    expect(String(socket.write.mock.calls[0][0])).toContain('403 Forbidden')
+    expect(wsServers).toHaveLength(0)
   })
 
   it('upgrades when auth succeeds and params are valid', async () => {

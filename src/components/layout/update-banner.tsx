@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useMissionControl } from '@/store'
 import { Button } from '@/components/ui/button'
+import { apiFetch, ApiError } from '@/lib/api-client'
 
 type UpdateState = 'idle' | 'updating' | 'restarting' | 'error'
 
@@ -22,10 +23,13 @@ export function UpdateBanner() {
     setErrorMsg(null)
 
     try {
-      const res = await fetch('/api/releases/update', {
+      const res = await apiFetch<Response>('/api/releases/update', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetVersion: updateAvailable!.latestVersion }),
+        body: JSON.stringify({
+          targetVersion: updateAvailable!.latestVersion,
+          confirmation: 'update_mission_control',
+        }),
+        raw: true,
       })
       const data = await res.json()
 
@@ -40,7 +44,10 @@ export function UpdateBanner() {
         // Poll until the server comes back up, then reload
         const poll = setInterval(async () => {
           try {
-            const check = await fetch('/api/releases/check', { cache: 'no-store' })
+            const check = await apiFetch<Response>('/api/releases/check', {
+              cache: 'no-store',
+              raw: true,
+            })
             if (check.ok) {
               clearInterval(poll)
               window.location.reload()
@@ -58,9 +65,11 @@ export function UpdateBanner() {
       } else {
         window.location.reload()
       }
-    } catch {
+    } catch (error) {
       setState('error')
-      setErrorMsg(t('networkError'))
+      setErrorMsg(error instanceof ApiError && error.code !== 'NETWORK_ERROR'
+        ? error.message || t('updateFailed')
+        : t('networkError'))
     }
   }
 

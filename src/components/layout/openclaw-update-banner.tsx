@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { useMissionControl } from '@/store'
 import { Button } from '@/components/ui/button'
+import { apiFetch, ApiError } from '@/lib/api-client'
 
 type UpdateState = 'idle' | 'updating' | 'success' | 'error'
 
@@ -32,12 +33,16 @@ export function OpenClawUpdateBanner() {
     setErrorMsg(null)
 
     try {
-      const res = await fetch('/api/openclaw/update', { method: 'POST' })
+      const res = await apiFetch<Response>('/api/openclaw/update', {
+        method: 'POST',
+        body: JSON.stringify({ confirmation: 'update_openclaw' }),
+        raw: true,
+      })
       const data = await res.json()
 
       if (!res.ok) {
         setState('error')
-        setErrorMsg(data.detail || data.error || t('updateFailed'))
+        setErrorMsg(data.error || t('updateFailed'))
         return
       }
 
@@ -45,9 +50,13 @@ export function OpenClawUpdateBanner() {
       setNewVersion(data.newVersion)
       // Clear the banner after a few seconds
       setTimeout(() => setOpenclawUpdate(null), 5000)
-    } catch {
+    } catch (error) {
       setState('error')
-      setErrorMsg(t('networkError'))
+      if (error instanceof ApiError && error.code !== 'NETWORK_ERROR') {
+        setErrorMsg(error.message || t('updateFailed'))
+      } else {
+        setErrorMsg(t('networkError'))
+      }
     }
   }
 

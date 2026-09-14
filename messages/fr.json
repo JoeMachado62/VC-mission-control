@@ -111,7 +111,8 @@
     },
     "collapseSidebar": "Réduire la barre latérale",
     "expandSidebar": "Développer la barre latérale",
-    "more": "Plus"
+    "more": "Plus",
+    "logout": "Se déconnecter"
   },
   "settings": {
     "language": "Langue",
@@ -747,13 +748,17 @@
     "spawnSubAgent": "Créer un sous-agent",
     "newTask": "Nouvelle tâche",
     "refresh": "Actualiser",
+    "loadingTasks": "Chargement des tâches...",
     "spawnAgentPlaceholder": "Nom de l'agent",
     "spawnTaskPlaceholder": "Description de la tâche",
+    "spawnLabelPlaceholder": "Libellé de la tâche",
     "timeoutTitle": "Délai d'expiration (minutes)",
+    "timeoutSeconds": "Délai d'attente (secondes)",
     "spawning": "Création...",
     "spawn": "Créer",
     "noActiveSpawnRequests": "Aucune demande de création active",
     "dismissError": "Fermer l'erreur",
+    "taskBoard": "Tableau des tâches",
     "taskBoardAriaLabel": "Tableau des tâches",
     "columnAriaLabel": "Colonne {title}, {count} tâches",
     "colBacklog": "File d'attente",
@@ -855,6 +860,7 @@
     "today": "Aujourd'hui",
     "next": "Suivant",
     "calMode_agenda": "Agenda",
+    "calMode_day": "Jour",
     "calMode_week": "Semaine",
     "calMode_month": "Mois",
     "searchPlaceholder": "Rechercher des tâches...",
@@ -1160,7 +1166,15 @@
     "decommissionQueuedDryRun": "Simulation de désaffectation mise en file pour {slug}",
     "decommissionQueued": "Désaffectation mise en file pour {slug}",
     "optionalReason": "Raison optionnelle pour {action} :",
-    "jobActioned": "Travail #{jobId} {action}"
+    "jobActioned": "Travail #{jobId} {action}",
+    "workspaceFieldsTitle": "Espaces de travail",
+    "workspaceFieldsDesc": "Tag de marque et isolation mémoire des agents par espace de travail.",
+    "workspaceBrandPlaceholder": "Marque (optionnel)",
+    "isolationShared": "Partagé",
+    "isolationStrict": "Strict",
+    "save": "Enregistrer",
+    "saving": "Enregistrement...",
+    "workspaceFieldsSaved": "Espace de travail {name} mis à jour"
   },
   "auditTrail": {
     "title": "Journal d'audit",

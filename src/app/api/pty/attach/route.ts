@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { isTmuxAvailable, tmuxSessionExists, listTmuxSessions, listPtySessions } from '@/lib/pty-manager'
+import { denyUnscopedResourceForStrictWorkspace } from '@/lib/workspace-isolation'
 
 /**
  * POST /api/pty/attach — Check if a PTY can be created for a session
@@ -11,6 +12,12 @@ import { isTmuxAvailable, tmuxSessionExists, listTmuxSessions, listPtySessions }
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(
+    auth.user,
+    'terminal_sessions',
+    new URL(request.url).pathname,
+  )
+  if (isolationDeny) return isolationDeny
 
   try {
     const body = await request.json()
@@ -72,6 +79,12 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(
+    auth.user,
+    'terminal_sessions',
+    new URL(request.url).pathname,
+  )
+  if (isolationDeny) return isolationDeny
 
   return NextResponse.json({
     tmuxAvailable: isTmuxAvailable(),

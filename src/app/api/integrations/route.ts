@@ -12,6 +12,7 @@ import { mutationLimiter } from '@/lib/rate-limit'
 import { detectProviderSubscriptions } from '@/lib/provider-subscriptions'
 import { getPluginIntegrations, getPluginCategories } from '@/lib/plugins'
 import type { PluginIntegrationDef } from '@/lib/plugins'
+import { denyUnscopedResourceForStrictWorkspace } from '@/lib/workspace-isolation'
 
 // ---------------------------------------------------------------------------
 // Integration registry
@@ -311,6 +312,8 @@ async function getOpEnv(): Promise<NodeJS.ProcessEnv> {
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const envData = await readEnvFile()
   if (!envData) {
@@ -469,6 +472,8 @@ export async function GET(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const body = await request.json().catch(() => null)
   if (!body?.vars || typeof body.vars !== 'object') {
@@ -528,6 +533,8 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   let body: any
   try { body = await request.json() } catch { return NextResponse.json({ error: 'Request body required' }, { status: 400 }) }
@@ -585,6 +592,8 @@ export async function DELETE(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const rateCheck = mutationLimiter(request)
   if (rateCheck) return rateCheck

@@ -7,6 +7,7 @@ import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useMissionControl } from '@/store'
+import { apiFetch } from '@/lib/api-client'
 import { useNavigateToPanel } from '@/lib/navigation'
 import { clampWizardStep, getWizardSteps, stepIdAt } from '@/lib/onboarding-flow'
 import { SecurityScanCard } from '@/components/onboarding/security-scan-card'
@@ -94,8 +95,7 @@ export function OnboardingWizard() {
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
 
-    fetch('/api/onboarding')
-      .then(r => r.ok ? r.json() : null)
+    apiFetch<OnboardingState>('/api/onboarding')
       .then(data => {
         if (data) {
           setState(data)
@@ -113,9 +113,9 @@ export function OnboardingWizard() {
 
     // Fetch system capabilities and runtime status in parallel
     Promise.allSettled([
-      fetch('/api/status?action=capabilities').then(r => r.ok ? r.json() : null),
-      fetch('/api/agents?limit=1').then(r => r.ok ? r.json() : null),
-      fetch('/api/agent-runtimes').then(r => r.ok ? r.json() : null),
+      apiFetch<{ claudeSessions?: number; gateway?: boolean; dashboardRegistration?: DashboardRegistration | null }>('/api/status?action=capabilities'),
+      apiFetch<{ total?: number }>('/api/agents?limit=1'),
+      apiFetch<{ runtimes?: RuntimeStatusInfo[] }>('/api/agent-runtimes'),
     ]).then(([statusResult, agentsResult, runtimesResult]) => {
       const statusData = statusResult.status === 'fulfilled' ? statusResult.value : null
       const agentsData = agentsResult.status === 'fulfilled' ? agentsResult.value : null
@@ -147,8 +147,7 @@ export function OnboardingWizard() {
 
   useEffect(() => {
     if (step !== credentialsStepIndex || credentialStatus) return
-    fetch('/api/diagnostics')
-      .then(r => r.ok ? r.json() : null)
+    apiFetch<{ security?: { checks?: DiagSecurityCheck[] } }>('/api/diagnostics')
       .then(data => {
         if (data?.security?.checks) {
           const checks = data.security.checks as DiagSecurityCheck[]
@@ -161,18 +160,16 @@ export function OnboardingWizard() {
   }, [step, credentialStatus, credentialsStepIndex])
 
   const completeStep = useCallback(async (stepId: string) => {
-    await fetch('/api/onboarding', {
+    await apiFetch('/api/onboarding', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'complete_step', step: stepId }),
     }).catch(() => {})
   }, [])
 
   const finish = useCallback(async () => {
     setCompletionMessage(true)
-    await fetch('/api/onboarding', {
+    await apiFetch('/api/onboarding', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'complete' }),
     }).catch(() => {})
     setTimeout(() => {
@@ -184,9 +181,8 @@ export function OnboardingWizard() {
 
   const skip = useCallback(async () => {
     setClosing(true)
-    await fetch('/api/onboarding', {
+    await apiFetch('/api/onboarding', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'skip' }),
     }).catch(() => {})
     markOnboardingDismissedThisSession()
@@ -233,7 +229,7 @@ export function OnboardingWizard() {
   const isGateway = dashboardMode === 'full' || gatewayAvailable
 
   return createPortal(
-    <div className={`fixed inset-0 z-[140] flex items-start justify-center overflow-y-auto p-2 sm:items-center sm:p-4 transition-opacity duration-300 ${closing ? 'opacity-0' : 'opacity-100'}`}>
+    <div className={`fixed inset-0 z-140 flex items-start justify-center overflow-y-auto p-2 sm:items-center sm:p-4 transition-opacity duration-300 ${closing ? 'opacity-0' : 'opacity-100'}`}>
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/82 backdrop-blur-md" onClick={skip} />
 
@@ -278,7 +274,7 @@ export function OnboardingWizard() {
             : 'opacity-100 translate-x-0'
         }`}>
           {completionMessage && (
-            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background/95 backdrop-blur-sm">
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-background/95 backdrop-blur-xs">
               <div className={`text-2xl font-bold mb-2 ${isGateway ? 'text-void-cyan' : 'text-void-amber'}`}>{t('stationOnline')}</div>
               <p className="text-sm text-muted-foreground">{t('stationReady')}</p>
             </div>
@@ -421,7 +417,7 @@ function StepWelcome({ isGateway, capabilities, runtimeStatuses, runtimesLoading
           />
         </div>
       </div>
-      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
+      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur-sm supports-backdrop-filter:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
         <Button variant="ghost" size="sm" onClick={onSkip} className="text-sm text-muted-foreground min-h-10 px-4">
           {t('skipSetup')}
         </Button>
@@ -457,9 +453,8 @@ function StepInterfaceMode({ isGateway, onNext, onBack }: {
     setSelected(mode)
     setInterfaceMode(mode)
     try {
-      await fetch('/api/settings', {
+      await apiFetch('/api/settings', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ settings: { 'general.interface_mode': mode } }),
       })
     } catch {}
@@ -530,7 +525,7 @@ function StepInterfaceMode({ isGateway, onNext, onBack }: {
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
+      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur-sm supports-backdrop-filter:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
         <Button variant="ghost" size="sm" onClick={onBack} className="text-sm text-muted-foreground min-h-10 px-4">{tc('back')}</Button>
         <Button onClick={onNext} size="sm" className={`${mc.bgBtn} ${mc.text} border ${mc.border} ${mc.hoverBg} min-h-10 px-4`}>
           {tc('continue')}
@@ -555,8 +550,11 @@ function StepGatewayLink({ isGateway, registration, onNext, onBack }: {
   const testConnection = async () => {
     setTesting(true)
     try {
-      const res = await fetch('/api/gateways/health', { method: 'POST' })
-      setHealthOk(res.ok)
+      // apiFetch throws on any non-2xx; reaching here means the gateway
+      // responded OK. Non-ok / network errors fall through to the catch,
+      // preserving the original `setHealthOk(res.ok)` truth table.
+      await apiFetch('/api/gateways/health', { method: 'POST', raw: true })
+      setHealthOk(true)
     } catch {
       setHealthOk(false)
     } finally {
@@ -627,7 +625,7 @@ function StepGatewayLink({ isGateway, registration, onNext, onBack }: {
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
+      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur-sm supports-backdrop-filter:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
         <Button variant="ghost" size="sm" onClick={onBack} className="text-sm text-muted-foreground min-h-10 px-4">{tc('back')}</Button>
         <Button onClick={onNext} size="sm" className={`${mc.bgBtn} ${mc.text} border ${mc.border} ${mc.hoverBg} min-h-10 px-4`}>
           {tc('continue')}
@@ -723,7 +721,7 @@ function StepCredentials({
         )}
       </div>
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
+      <div className="sticky bottom-0 z-10 -mx-4 mt-4 flex items-center justify-between border-t border-border/30 bg-background/95 px-4 py-3 backdrop-blur-sm supports-backdrop-filter:bg-background/80 sm:static sm:z-auto sm:mx-0 sm:mt-6 sm:bg-transparent sm:px-0 sm:py-4 sm:backdrop-blur-0">
         <Button variant="ghost" size="sm" onClick={onBack} className="text-sm text-muted-foreground min-h-10 px-4">{tc('back')}</Button>
         <Button onClick={onFinish} size="sm" className={`${mc.bgBtn} ${mc.text} border ${mc.border} ${mc.hoverBg} min-h-10 px-4`}>
           {allGood ? t('launchStation') : t('launchAnyway')}

@@ -4,6 +4,19 @@ import { useState, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { RuntimeSetupModal } from '@/components/onboarding/runtime-setup-modal'
+import { apiFetch, ApiError } from '@/lib/api-client'
+
+interface RuntimeCapabilities {
+  dispatch: boolean
+  session_resume: boolean
+  pty: boolean
+  workspace_cwd: boolean
+  tool_policy: boolean
+  budget_cap: boolean
+  structured_output: boolean
+  skills_inventory: boolean
+  receipts: { diff: boolean; tests: boolean; artifact: boolean; browser: boolean; telemetry: boolean }
+}
 
 interface RuntimeStatus {
   id: string
@@ -15,7 +28,21 @@ interface RuntimeStatus {
   authRequired: boolean
   authHint: string
   authenticated: boolean
+  /** Declared per adapter version (#900) — depth of the MC integration, not host state. */
+  capabilities?: RuntimeCapabilities
 }
+
+/** Technical identifiers, deliberately untranslated (matches runtime names). */
+const CAPABILITY_LABELS: Array<{ key: keyof Omit<RuntimeCapabilities, 'receipts'>; label: string }> = [
+  { key: 'dispatch', label: 'dispatch' },
+  { key: 'session_resume', label: 'sessions' },
+  { key: 'pty', label: 'pty' },
+  { key: 'workspace_cwd', label: 'cwd' },
+  { key: 'tool_policy', label: 'tools' },
+  { key: 'budget_cap', label: 'budget' },
+  { key: 'structured_output', label: 'structured' },
+  { key: 'skills_inventory', label: 'skills' },
+]
 
 interface InstallJob {
   id: string
@@ -29,21 +56,36 @@ interface Props {
   showFeedback: (ok: boolean, text: string) => void
 }
 
+interface RuntimeResponse {
+  runtimes?: RuntimeStatus[]
+  isDocker?: boolean
+  runtimeInstallsEnabled?: boolean
+  job?: InstallJob
+  yaml?: string
+}
+
+function isRuntimeTransportFailure(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    (error.code === 'NETWORK_ERROR' || error.code === 'PARSE_ERROR')
+  )
+}
+
 export function AgentRuntimesSection({ showFeedback }: Props) {
   const [runtimes, setRuntimes] = useState<RuntimeStatus[]>([])
   const [isDocker, setIsDocker] = useState(false)
+  const [runtimeInstallsEnabled, setRuntimeInstallsEnabled] = useState(false)
   const [loading, setLoading] = useState(true)
   const [activeJobs, setActiveJobs] = useState<Record<string, InstallJob>>({})
   const [expandedOutput, setExpandedOutput] = useState<string | null>(null)
-  const [setupRuntime, setSetupRuntime] = useState<'openclaw' | 'hermes' | 'claude' | 'codex' | null>(null)
+  const [setupRuntime, setSetupRuntime] = useState<'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode' | null>(null)
 
   const fetchRuntimes = useCallback(async () => {
     try {
-      const res = await fetch('/api/agent-runtimes')
-      if (!res.ok) return
-      const data = await res.json()
+      const data = await apiFetch<RuntimeResponse>('/api/agent-runtimes')
       setRuntimes(data.runtimes || [])
       setIsDocker(data.isDocker || false)
+      setRuntimeInstallsEnabled(data.runtimeInstallsEnabled === true)
     } catch {
       // ignore
     } finally {
@@ -61,20 +103,18 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
     const interval = setInterval(async () => {
       for (const job of running) {
         try {
-          const res = await fetch('/api/agent-runtimes', {
+          const data = await apiFetch<RuntimeResponse>('/api/agent-runtimes', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'job-status', jobId: job.id }),
           })
-          if (!res.ok) continue
-          const data = await res.json()
           if (data.job) {
-            setActiveJobs(prev => ({ ...prev, [data.job.runtime]: data.job }))
-            if (data.job.status === 'success') {
-              showFeedback(true, `${data.job.runtime} installed successfully`)
+            const runtimeJob = data.job
+            setActiveJobs(prev => ({ ...prev, [runtimeJob.runtime]: runtimeJob }))
+            if (runtimeJob.status === 'success') {
+              showFeedback(true, `${runtimeJob.runtime} installed successfully`)
               fetchRuntimes()
-            } else if (data.job.status === 'failed') {
-              showFeedback(false, `${data.job.runtime} install failed`)
+            } else if (runtimeJob.status === 'failed') {
+              showFeedback(false, `${runtimeJob.runtime} install failed`)
               fetchRuntimes()
             }
           }
@@ -89,52 +129,44 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
 
   const handleInstall = async (runtimeId: string) => {
     try {
-      const res = await fetch('/api/agent-runtimes', {
+      const data = await apiFetch<RuntimeResponse>('/api/agent-runtimes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'install', runtime: runtimeId, mode: 'local' }),
       })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        showFeedback(false, data.error || 'Failed to start install')
-        return
-      }
-      const data = await res.json()
       if (data.job) {
-        setActiveJobs(prev => ({ ...prev, [runtimeId]: data.job }))
+        const runtimeJob = data.job
+        setActiveJobs(prev => ({ ...prev, [runtimeId]: runtimeJob }))
       }
-    } catch {
-      showFeedback(false, 'Failed to start install')
+    } catch (err) {
+      showFeedback(false, err instanceof ApiError ? err.message : 'Failed to start install')
     }
   }
 
   const handleCopyCompose = async (runtimeId: string) => {
     try {
-      const res = await fetch('/api/agent-runtimes', {
+      const data = await apiFetch<RuntimeResponse>('/api/agent-runtimes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'docker-compose', runtime: runtimeId }),
       })
-      if (!res.ok) return
-      const data = await res.json()
+      if (typeof data.yaml !== 'string') return
       await navigator.clipboard.writeText(data.yaml)
       showFeedback(true, 'Docker compose snippet copied')
-    } catch {
+    } catch (err) {
+      if (!isRuntimeTransportFailure(err)) return
       showFeedback(false, 'Failed to copy')
     }
   }
 
   const handleDetect = async (runtimeId: string) => {
     try {
-      const res = await fetch('/api/agent-runtimes', {
+      await apiFetch<RuntimeResponse>('/api/agent-runtimes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'detect', runtime: runtimeId }),
       })
-      if (!res.ok) return
       await fetchRuntimes()
       showFeedback(true, 'Detection refreshed')
-    } catch {
+    } catch (err) {
+      if (!isRuntimeTransportFailure(err)) return
       showFeedback(false, 'Detection failed')
     }
   }
@@ -154,6 +186,12 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
       <p className="text-xs text-muted-foreground mb-3">
         Install and manage agent runtimes for running AI agents.
       </p>
+
+      {!runtimeInstallsEnabled && (
+        <div className="mb-3 p-2 rounded border border-amber-500/20 bg-amber-500/5 text-xs text-muted-foreground">
+          Local installs are disabled by default. Review the runtime supply-chain settings before enabling them.
+        </div>
+      )}
 
       {isDocker && (
         <div className="mb-3 p-2 rounded border border-void-cyan/20 bg-void-cyan/5 text-xs text-muted-foreground">
@@ -182,7 +220,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
               {/* Installing shimmer + progress */}
               {isInstalling && (
                 <div className="absolute inset-0 overflow-hidden pointer-events-none">
-                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-emerald-500/5 to-transparent animate-[shimmer_2s_infinite]" style={{ backgroundSize: '200% 100%' }} />
+                  <div className="absolute inset-0 bg-linear-to-r from-transparent via-emerald-500/5 to-transparent animate-[shimmer_2s_infinite]" style={{ backgroundSize: '200% 100%' }} />
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-border/20 overflow-hidden">
                     <div className="h-full bg-emerald-500/60 animate-[indeterminate_1.5s_infinite_ease-in-out]" />
                   </div>
@@ -248,7 +286,16 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
                                 <Button variant="ghost" size="sm" onClick={() => handleCopyCompose(rt.id)} className="text-2xs h-6 px-2">Sidecar YAML</Button>
                               </>
                             ) : (
-                              <Button variant="ghost" size="sm" onClick={() => handleInstall(rt.id)} className="text-2xs h-6 px-2">Install</Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={!runtimeInstallsEnabled}
+                                title={runtimeInstallsEnabled ? undefined : 'Enable reviewed runtime installs in the server environment first'}
+                                onClick={() => handleInstall(rt.id)}
+                                className="text-2xs h-6 px-2"
+                              >
+                                Install
+                              </Button>
                             )}
                             {isDocker && rt.id !== 'openclaw' && (
                               <Button variant="ghost" size="sm" onClick={() => handleCopyCompose(rt.id)} className="text-2xs h-6 px-2">Sidecar YAML</Button>
@@ -260,6 +307,35 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
 
                     <p className="text-xs text-muted-foreground/70">{rt.description}</p>
 
+                    {rt.capabilities && (
+                      /* Capability matrix (#900): depth of the MC integration is
+                         shown honestly — a dim chip means this adapter cannot
+                         supply that control or receipt, not that it is off. */
+                      <div className="flex flex-wrap items-center gap-1 mt-1.5" title="Integration capability depth — declared per adapter version, independent of install state">
+                        {CAPABILITY_LABELS.map(({ key, label }) => (
+                          <span
+                            key={key}
+                            className={`text-[10px] px-1.5 py-px rounded border font-mono ${
+                              rt.capabilities![key]
+                                ? 'bg-primary/10 text-primary/90 border-primary/25'
+                                : 'bg-muted/10 text-muted-foreground/40 border-border/15'
+                            }`}
+                          >
+                            {label}
+                          </span>
+                        ))}
+                        <span
+                          className={`text-[10px] px-1.5 py-px rounded border font-mono ${
+                            rt.capabilities.receipts.telemetry
+                              ? 'bg-primary/10 text-primary/90 border-primary/25'
+                              : 'bg-muted/10 text-muted-foreground/40 border-border/15'
+                          }`}
+                        >
+                          telemetry
+                        </span>
+                      </div>
+                    )}
+
                     {rt.installed && rt.authRequired && (
                       <p className={`text-2xs mt-1 ${rt.authenticated ? 'text-emerald-400/70' : 'text-amber-400'}`}>
                         {rt.authenticated ? 'Authenticated' : rt.authHint}
@@ -268,7 +344,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
 
                     {(rt.installed || justInstalled) && (
                       <button
-                        onClick={() => setSetupRuntime(rt.id as 'openclaw' | 'hermes' | 'claude' | 'codex')}
+                        onClick={() => setSetupRuntime(rt.id as 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode')}
                         className="text-2xs mt-1.5 px-2 py-1 rounded border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
                       >
                         Configure {rt.name}
@@ -284,7 +360,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
                             <Button variant="ghost" size="sm" onClick={() => handleCopyCompose(rt.id)} className="text-2xs h-6 px-2">Sidecar YAML</Button>
                           </div>
                         ) : (
-                          <Button variant="ghost" size="sm" onClick={() => handleInstall(rt.id)} className="text-2xs h-6 px-2">Retry</Button>
+                          <Button variant="ghost" size="sm" disabled={!runtimeInstallsEnabled} onClick={() => handleInstall(rt.id)} className="text-2xs h-6 px-2">Retry</Button>
                         )}
                       </div>
                     )}
@@ -323,7 +399,7 @@ export function AgentRuntimesSection({ showFeedback }: Props) {
           onComplete={() => {
             setSetupRuntime(null)
             fetchRuntimes()
-            const names: Record<string, string> = { openclaw: 'OpenClaw', hermes: 'Hermes', claude: 'Claude Code', codex: 'Codex CLI' }
+            const names: Record<string, string> = { openclaw: 'OpenClaw', hermes: 'Hermes', claude: 'Claude Code', codex: 'Codex CLI', opencode: 'OpenCode' }
             showFeedback(true, `${names[setupRuntime] || setupRuntime} setup complete`)
           }}
         />

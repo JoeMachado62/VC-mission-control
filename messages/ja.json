@@ -111,7 +111,8 @@
     },
     "collapseSidebar": "サイドバーを折りたたむ",
     "expandSidebar": "サイドバーを展開",
-    "more": "その他"
+    "more": "その他",
+    "logout": "ログアウト"
   },
   "settings": {
     "language": "言語",
@@ -747,13 +748,17 @@
     "spawnSubAgent": "サブエージェントを生成",
     "newTask": "新しいタスク",
     "refresh": "更新",
+    "loadingTasks": "タスクを読み込み中...",
     "spawnAgentPlaceholder": "エージェント名",
     "spawnTaskPlaceholder": "タスクの説明",
+    "spawnLabelPlaceholder": "タスクラベル",
     "timeoutTitle": "タイムアウト（分）",
+    "timeoutSeconds": "タイムアウト（秒）",
     "spawning": "生成中...",
     "spawn": "生成",
     "noActiveSpawnRequests": "アクティブな生成リクエストなし",
     "dismissError": "エラーを閉じる",
+    "taskBoard": "タスクボード",
     "taskBoardAriaLabel": "タスクボード",
     "columnAriaLabel": "{title}列、{count}件のタスク",
     "colBacklog": "バックログ",
@@ -855,6 +860,7 @@
     "today": "今日",
     "next": "次へ",
     "calMode_agenda": "アジェンダ",
+    "calMode_day": "日",
     "calMode_week": "週",
     "calMode_month": "月",
     "searchPlaceholder": "ジョブを検索...",
@@ -1160,7 +1166,15 @@
     "decommissionQueuedDryRun": "{slug} のドライラン廃止がキューされました",
     "decommissionQueued": "{slug} の廃止がキューされました",
     "optionalReason": "{action} の任意の理由：",
-    "jobActioned": "ジョブ #{jobId} が{action}されました"
+    "jobActioned": "ジョブ #{jobId} が{action}されました",
+    "workspaceFieldsTitle": "ワークスペース",
+    "workspaceFieldsDesc": "ワークスペースごとのブランドタグとエージェントメモリの分離設定。",
+    "workspaceBrandPlaceholder": "ブランド（任意）",
+    "isolationShared": "共有",
+    "isolationStrict": "厳格",
+    "save": "保存",
+    "saving": "保存中...",
+    "workspaceFieldsSaved": "ワークスペース {name} を更新しました"
   },
   "auditTrail": {
     "title": "監査ログ",

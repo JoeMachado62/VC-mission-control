@@ -111,7 +111,8 @@
     },
     "collapseSidebar": "Contraer barra lateral",
     "expandSidebar": "Expandir barra lateral",
-    "more": "Más"
+    "more": "Más",
+    "logout": "Cerrar sesión"
   },
   "settings": {
     "language": "Idioma",
@@ -747,13 +748,17 @@
     "spawnSubAgent": "Crear sub-agente",
     "newTask": "Nueva tarea",
     "refresh": "Actualizar",
+    "loadingTasks": "Cargando tareas...",
     "spawnAgentPlaceholder": "Nombre del agente",
     "spawnTaskPlaceholder": "Descripción de la tarea",
+    "spawnLabelPlaceholder": "Etiqueta de la tarea",
     "timeoutTitle": "Tiempo de espera (minutos)",
+    "timeoutSeconds": "Tiempo de espera (segundos)",
     "spawning": "Creando...",
     "spawn": "Crear",
     "noActiveSpawnRequests": "Sin solicitudes de creación activas",
     "dismissError": "Cerrar error",
+    "taskBoard": "Tablero de tareas",
     "taskBoardAriaLabel": "Tablero de tareas",
     "columnAriaLabel": "Columna {title}, {count} tareas",
     "colBacklog": "Pendientes",
@@ -855,6 +860,7 @@
     "today": "Hoy",
     "next": "Siguiente",
     "calMode_agenda": "Agenda",
+    "calMode_day": "Día",
     "calMode_week": "Semana",
     "calMode_month": "Mes",
     "searchPlaceholder": "Buscar trabajos...",
@@ -1160,7 +1166,15 @@
     "decommissionQueuedDryRun": "Retiro simulacro encolado para {slug}",
     "decommissionQueued": "Retiro encolado para {slug}",
     "optionalReason": "Motivo opcional para {action}:",
-    "jobActioned": "Trabajo #{jobId} {action}"
+    "jobActioned": "Trabajo #{jobId} {action}",
+    "workspaceFieldsTitle": "Espacios de trabajo",
+    "workspaceFieldsDesc": "Etiqueta de marca y aislamiento de memoria de agentes por espacio de trabajo.",
+    "workspaceBrandPlaceholder": "Marca (opcional)",
+    "isolationShared": "Compartido",
+    "isolationStrict": "Estricto",
+    "save": "Guardar",
+    "saving": "Guardando...",
+    "workspaceFieldsSaved": "Espacio de trabajo {name} actualizado"
   },
   "auditTrail": {
     "title": "Registro de auditoría",

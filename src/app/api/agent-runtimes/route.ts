@@ -1,13 +1,14 @@
 import { existsSync } from 'node:fs'
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
-import { detectAllRuntimes, detectRuntime, startInstall, getInstallJob, getActiveJobs, generateDockerSidecar } from '@/lib/agent-runtimes'
+import { detectAllRuntimes, detectRuntime, getRuntimeCapabilities, startInstall, getInstallJob, getActiveJobs, generateDockerSidecar } from '@/lib/agent-runtimes'
 import type { RuntimeId, DeploymentMode } from '@/lib/agent-runtimes'
+import { runtimeInstallsEnabled } from '@/lib/runtime-install-security'
 import { clearHermesDetectionCache } from '@/lib/hermes-sessions'
 import { logAuditEvent } from '@/lib/db'
 import { logger } from '@/lib/logger'
 
-const VALID_RUNTIMES = new Set<RuntimeId>(['openclaw', 'hermes', 'claude', 'codex'])
+const VALID_RUNTIMES = new Set<RuntimeId>(['openclaw', 'hermes', 'claude', 'codex', 'opencode'])
 const VALID_MODES = new Set<DeploymentMode>(['local', 'docker'])
 
 export async function GET(request: NextRequest) {
@@ -16,11 +17,17 @@ export async function GET(request: NextRequest) {
 
   // Clear caches so freshly-installed runtimes are detected immediately
   clearHermesDetectionCache()
-  const runtimes = detectAllRuntimes()
+  // Capability manifests are declared per adapter version (#900) — composed
+  // here so detection (host state) and capability depth (adapter code) stay
+  // separate truths.
+  const runtimes = detectAllRuntimes().map((runtime) => ({
+    ...runtime,
+    capabilities: getRuntimeCapabilities(runtime.id),
+  }))
   const activeJobs = getActiveJobs()
   const isDocker = existsSync('/.dockerenv')
 
-  return NextResponse.json({ runtimes, activeJobs, isDocker })
+  return NextResponse.json({ runtimes, activeJobs, isDocker, runtimeInstallsEnabled: runtimeInstallsEnabled() })
 }
 
 export async function POST(request: NextRequest) {
@@ -41,10 +48,15 @@ export async function POST(request: NextRequest) {
     const mode = (body.mode || 'local') as DeploymentMode
     const isDocker = existsSync('/.dockerenv')
     if (!runtime || !VALID_RUNTIMES.has(runtime)) {
-      return NextResponse.json({ error: 'Invalid runtime. Use: openclaw, hermes' }, { status: 400 })
+      return NextResponse.json({ error: 'Invalid runtime. Use: openclaw, hermes, claude, codex, opencode' }, { status: 400 })
     }
     if (!VALID_MODES.has(mode)) {
       return NextResponse.json({ error: 'Invalid mode. Use: local, docker' }, { status: 400 })
+    }
+    if (mode === 'local' && !runtimeInstallsEnabled()) {
+      return NextResponse.json({
+        error: 'Local runtime installs are disabled. Set MC_ENABLE_RUNTIME_INSTALLS=1 after reviewing the supply-chain requirements.',
+      }, { status: 403 })
     }
     if (runtime === 'openclaw' && mode === 'local' && isDocker) {
       return NextResponse.json(
@@ -61,6 +73,7 @@ export async function POST(request: NextRequest) {
       action: 'agent_runtime.install',
       actor: auth.user.username,
       detail: JSON.stringify({ runtime, mode }),
+      workspace_id: auth.user.workspace_id ?? 1,
     })
 
     const job = startInstall(runtime, mode)

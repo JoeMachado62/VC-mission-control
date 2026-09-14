@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { apiFetch, ApiError } from '@/lib/api-client'
 
 interface RuntimeSetupModalProps {
-  runtime: 'openclaw' | 'hermes' | 'claude' | 'codex'
+  runtime: 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode'
   isDocker?: boolean
   onClose: () => void
   onComplete: () => void
@@ -12,7 +13,7 @@ interface RuntimeSetupModalProps {
 
 export function RuntimeSetupModal({ runtime, isDocker = false, onClose, onComplete }: RuntimeSetupModalProps) {
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className="bg-card border border-border rounded-xl max-w-lg w-full max-h-[80vh] overflow-y-auto shadow-2xl shadow-black/30">
         {runtime === 'openclaw' ? (
           <OpenClawSetup onClose={onClose} onComplete={onComplete} isDocker={isDocker} />
@@ -20,9 +21,34 @@ export function RuntimeSetupModal({ runtime, isDocker = false, onClose, onComple
           <HermesSetup onClose={onClose} onComplete={onComplete} />
         ) : runtime === 'claude' ? (
           <ClaudeSetup onClose={onClose} onComplete={onComplete} />
-        ) : (
+        ) : runtime === 'codex' ? (
           <CodexSetup onClose={onClose} onComplete={onComplete} />
+        ) : (
+          <OpenCodeSetup onClose={onClose} onComplete={onComplete} />
         )}
+      </div>
+    </div>
+  )
+}
+
+function OpenCodeSetup({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-lg font-semibold">Set Up OpenCode</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">OpenCode is detected locally and sessions are read from its local SQLite state store.</p>
+        </div>
+        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <svg className="w-5 h-5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </div>
+      <div className="p-4 rounded-lg border border-border/30 bg-secondary/20 text-sm text-muted-foreground space-y-2">
+        <p>Mission Control reads OpenCode runtime status from the installed <code>opencode</code> CLI and scans session history from <code>~/.local/share/opencode/*.db</code>.</p>
+        <p>Restart OpenCode or create a new OpenCode session if you want Mission Control to pick up fresh session activity immediately.</p>
+      </div>
+      <div className="flex justify-end mt-4">
+        <Button size="sm" onClick={onComplete}>Done</Button>
       </div>
     </div>
   )
@@ -89,9 +115,21 @@ function OpenClawSetup({ onClose, onComplete, isDocker = false }: { onClose: () 
         return
       }
 
-      const doctorRes = await fetch('/api/openclaw/doctor')
-      if (doctorRes.ok) {
-        const data = await doctorRes.json()
+      // The install result is intentionally ignored (same as the original
+      // raw-fetch behavior, which checked neither .ok nor the body). The
+      // onboard command runs as part of post-install in agent-runtimes.ts.
+      // Swallow any error so we always proceed to the doctor health check.
+      try {
+        await apiFetch('/api/agent-runtimes', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'install', runtime: 'openclaw', mode: 'local' }),
+        })
+      } catch {
+        // ignore — original code never inspected the install response
+      }
+      // Use the doctor endpoint to check health.
+      try {
+        const data = await apiFetch<{ healthy?: boolean; issues?: string[] }>('/api/openclaw/doctor')
         setHealthStatus(data)
         if (data.healthy) {
           setStep('done')
@@ -99,13 +137,18 @@ function OpenClawSetup({ onClose, onComplete, isDocker = false }: { onClose: () 
           setStep('verify')
           setOutput(data.issues?.join('\n') || 'Some issues detected')
         }
-      } else {
-        const data = await doctorRes.json().catch(() => ({}))
-        const detail = data.error || 'OpenClaw is not installed or not reachable'
-        setMissingRuntime(/not installed|not reachable/i.test(detail))
-        setHealthStatus(null)
-        setOutput(detail)
-        setStep('verify')
+      } catch (doctorErr) {
+        // Preserve graceful degradation: a non-ok doctor response previously
+        // fell through to the verify step rather than surfacing an error.
+        if (doctorErr instanceof ApiError) {
+          const detail = doctorErr.message || 'OpenClaw is not installed or not reachable'
+          setMissingRuntime(/not installed|not reachable/i.test(detail))
+          setHealthStatus(null)
+          setOutput(detail)
+          setStep('verify')
+        } else {
+          throw doctorErr
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Setup failed')
@@ -118,18 +161,25 @@ function OpenClawSetup({ onClose, onComplete, isDocker = false }: { onClose: () 
     setRunning(true)
     setError(null)
     try {
-      const res = await fetch('/api/openclaw/doctor', { method: 'POST' })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.success) {
-          setStep('done')
-          setOutput('All issues resolved')
-        } else {
-          setOutput(data.output || 'Fix attempt completed with warnings')
-        }
+      const data = await apiFetch<{ success?: boolean }>('/api/openclaw/doctor', {
+        method: 'POST',
+        body: JSON.stringify({ confirmation: 'fix_openclaw' }),
+      })
+      if (data.success) {
+        setStep('done')
+        setOutput('All issues resolved')
+      } else {
+        setOutput('Fix attempt completed with warnings')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Doctor fix failed')
+      // Preserve graceful degradation: a non-ok response previously did
+      // nothing (no error surfaced), so swallow ApiError here. Only genuine
+      // failures (e.g. network) surface an error, as before.
+      if (err instanceof ApiError) {
+        // no-op — matches the original `if (res.ok)` with no else branch
+      } else {
+        setError(err instanceof Error ? err.message : 'Doctor fix failed')
+      }
     } finally {
       setRunning(false)
     }
@@ -143,14 +193,12 @@ function OpenClawSetup({ onClose, onComplete, isDocker = false }: { onClose: () 
         return
       }
 
-      const res = await fetch('/api/openclaw/doctor')
-      if (res.ok) {
-        const data = await res.json()
-        setHealthStatus(data)
-        if (data.healthy) setStep('done')
-      }
+      const data = await apiFetch<{ healthy?: boolean }>('/api/openclaw/doctor')
+      setHealthStatus(data)
+      if (data.healthy) setStep('done')
     } catch {
-      // ignore
+      // ignore — a non-ok/failed health check leaves state untouched,
+      // matching the original `if (res.ok)` guard with an empty catch.
     }
   }, [checkDockerGatewayHealth, isDocker])
 
@@ -325,16 +373,14 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/hermes')
-      if (res.ok) {
-        const data = await res.json()
-        setHermesStatus(data)
-        if (data.hookInstalled && step === 'hook') {
-          setStep('provider')
-        }
+      const data = await apiFetch<{ hookInstalled?: boolean }>('/api/hermes')
+      setHermesStatus(data)
+      if (data.hookInstalled && step === 'hook') {
+        setStep('provider')
       }
     } catch {
-      // ignore
+      // ignore — a non-ok/failed status fetch leaves state untouched,
+      // matching the original `if (res.ok)` guard with an empty catch.
     }
   }, [step])
 
@@ -358,19 +404,28 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
     setRunning(true)
     setError(null)
     try {
-      const res = await fetch('/api/hermes', {
+      // On success apiFetch returns the parsed body (unused here, as before).
+      // On a non-ok response apiFetch throws ApiError with the parsed body in
+      // `payload`; we re-surface `payload.error` to preserve the original
+      // "data.error || 'Failed to install hook'" message.
+      await apiFetch('/api/hermes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'install-hook' }),
       })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error(data.error || 'Failed to install hook')
-      }
       await fetchStatus()
       setStep('provider')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to install hook')
+      if (err instanceof ApiError) {
+        const payload = err.payload
+        const bodyError =
+          typeof payload === 'object' && payload !== null && 'error' in payload &&
+          typeof (payload as { error: unknown }).error === 'string'
+            ? (payload as { error: string }).error
+            : null
+        setError(bodyError || 'Failed to install hook')
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to install hook')
+      }
     } finally {
       setRunning(false)
     }
@@ -534,7 +589,7 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
               value={customModel}
               onChange={(e) => { setCustomModel(e.target.value); if (e.target.value) setSelectedModel(e.target.value) }}
               placeholder="Custom model..."
-              className="w-full h-6 rounded border border-border/20 bg-black/10 px-2 text-[10px] text-foreground font-mono placeholder:text-muted-foreground/20 focus:outline-none focus:ring-1 focus:ring-primary/30"
+              className="w-full h-6 rounded border border-border/20 bg-black/10 px-2 text-[10px] text-foreground font-mono placeholder:text-muted-foreground/20 focus:outline-hidden focus:ring-1 focus:ring-primary/30"
             />
           </div>
 
@@ -598,22 +653,45 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
                     setOauthCode(null)
                     try {
                       const providerForOAuth = (currentProvider && 'oauthHermesProvider' in currentProvider ? currentProvider.oauthHermesProvider : currentProvider?.hermesProvider) || providerType
-                      const res = await fetch('/api/hermes', {
+                      // The route returns HTTP 200 with { success } for both
+                      // success and command-failure, and 400 with { error } for
+                      // validation issues — all of which apiFetch returns as
+                      // parsed JSON (it only throws on 401/403/404/5xx). So the
+                      // original `res.ok && data.success` branch maps to a
+                      // simple `data.success` check on the parsed body.
+                      const data = await apiFetch<{
+                        success?: boolean
+                        deviceUrl?: unknown
+                        userCode?: unknown
+                        output?: string
+                        error?: string
+                      }>('/api/hermes', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ action: 'run-oauth-model', provider: providerForOAuth, model: customModel || selectedModel, authMethod: 'device_code' }),
                       })
-                      const data = await res.json().catch(() => ({}))
                       if (typeof data.deviceUrl === 'string' && data.deviceUrl) setOauthUrl(data.deviceUrl)
                       if (typeof data.userCode === 'string' && data.userCode) setOauthCode(data.userCode)
-                      if (res.ok && data.success) {
+                      if (data.success) {
                         setOauthOutput(data.output || 'Authentication complete. You can continue.')
                       } else {
                         setOauthError(data.error || 'OAuth command failed')
                         if (data.output) setOauthOutput(data.output)
                       }
                     } catch (err) {
-                      setOauthError(err instanceof Error ? err.message : 'OAuth command failed')
+                      // 401/403/404/5xx (apiFetch throws). The original read the
+                      // error body and surfaced data.error; mirror that from the
+                      // ApiError payload when available.
+                      if (err instanceof ApiError) {
+                        const payload = err.payload
+                        const bodyError =
+                          typeof payload === 'object' && payload !== null && 'error' in payload &&
+                          typeof (payload as { error: unknown }).error === 'string'
+                            ? (payload as { error: string }).error
+                            : null
+                        setOauthError(bodyError || 'OAuth command failed')
+                      } else {
+                        setOauthError(err instanceof Error ? err.message : 'OAuth command failed')
+                      }
                     } finally {
                       setOauthBusy(false)
                     }
@@ -678,7 +756,7 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
                 value={providerKey}
                 onChange={(e) => setProviderKey(e.target.value)}
                 placeholder={`sk-...`}
-                className="w-full h-9 rounded border border-border/30 bg-surface-1 px-2.5 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/30 font-mono"
+                className="w-full h-9 rounded border border-border/30 bg-surface-1 px-2.5 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-hidden focus:ring-1 focus:ring-primary/30 font-mono"
               />
               <p className="text-[10px] text-muted-foreground/30 mt-0.5">
                 Saved to ~/.hermes/.env
@@ -715,9 +793,15 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
                     xai: 'XAI_API_KEY',
                   }
                   if (authMethod !== 'device_code' && providerKey.trim()) {
-                    const res = await fetch('/api/hermes', {
+                    // Use raw mode: this route returns 400 with { error } for
+                    // validation failures, and the original branched on
+                    // `res.ok` (a 400 is !ok and must surface data.error).
+                    // apiFetch does not throw on 400, so we need the Response
+                    // to reproduce the exact ok/!ok branching. 401/403/404/5xx
+                    // still throw and are handled by the outer catch.
+                    const res = await apiFetch<Response>('/api/hermes', {
+                      raw: true,
                       method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ action: 'set-env', key: envMap[providerType], value: providerKey }),
                     })
                     if (res.ok) {
@@ -755,7 +839,7 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
             onChange={(e) => setSoulContent(e.target.value)}
             placeholder="Example: You are a concise technical expert who communicates clearly and directly. You focus on actionable solutions."
             rows={4}
-            className="w-full rounded border border-border/40 bg-surface-1 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
+            className="w-full rounded border border-border/40 bg-surface-1 px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-hidden focus:ring-1 focus:ring-primary/30 resize-none"
           />
 
           <p className="text-[10px] text-muted-foreground/40">
@@ -771,13 +855,13 @@ function HermesSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
               onClick={async () => {
                 if (soulContent.trim()) {
                   try {
-                    await fetch('/api/hermes', {
+                    await apiFetch('/api/hermes', {
                       method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ action: 'set-soul', content: soulContent }),
                     })
                   } catch {
-                    // non-critical
+                    // non-critical — result was never inspected; swallow any
+                    // error (including apiFetch's throw on non-ok) as before.
                   }
                 }
                 setStep('gateway')
@@ -906,13 +990,16 @@ function CopyableCommand({ command, label, runnable = false, onOutput }: {
     outputStickToBottomRef.current = true
     setShowOutputJump(false)
     try {
-      const res = await fetch('/api/hermes', {
+      // The route returns HTTP 200 with { success } for both command success
+      // and command failure, and 400 with { error } for validation — all
+      // returned as parsed JSON by apiFetch (which only throws on
+      // 401/403/404/5xx). The original `res.ok && data.success` check thus
+      // reduces to `data.success` on the parsed body.
+      const data = await apiFetch<{ success?: boolean; output?: string; error?: string }>('/api/hermes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'run-command', command }),
       })
-      const data = await res.json()
-      if (res.ok && data.success) {
+      if (data.success) {
         setOutput(data.output || 'Done')
         onOutput?.(data.output || '')
       } else {
@@ -920,7 +1007,19 @@ function CopyableCommand({ command, label, runnable = false, onOutput }: {
         if (data.output) setOutput(data.output)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to run command')
+      // 401/403/404/5xx (apiFetch throws). The original would have read the
+      // body and surfaced data.error; mirror that from the ApiError payload.
+      if (err instanceof ApiError) {
+        const payload = err.payload
+        const bodyError =
+          typeof payload === 'object' && payload !== null && 'error' in payload &&
+          typeof (payload as { error: unknown }).error === 'string'
+            ? (payload as { error: string }).error
+            : null
+        setError(bodyError || 'Command failed')
+      } else {
+        setError(err instanceof Error ? err.message : 'Failed to run command')
+      }
     } finally {
       setRunning(false)
     }
@@ -996,7 +1095,6 @@ function CopyableCommand({ command, label, runnable = false, onOutput }: {
 function ClaudeSetup({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
   const [step, setStep] = useState<'check' | 'auth' | 'done'>('check')
   const [checking, setChecking] = useState(false)
-  const [authenticated, setAuthenticated] = useState(false)
   const [version, setVersion] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -1004,19 +1102,23 @@ function ClaudeSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
     setChecking(true)
     setError(null)
     try {
-      const res = await fetch('/api/agent-runtimes')
-      if (res.ok) {
-        const data = await res.json()
-        const claude = (data.runtimes || []).find((r: any) => r.id === 'claude')
-        if (claude) {
-          setAuthenticated(claude.authenticated)
-          setVersion(claude.version)
-          if (claude.authenticated) setStep('done')
-          else setStep('auth')
-        }
+      const data = await apiFetch<{ runtimes?: Array<{ id: string; version: string; authenticated?: boolean }> }>('/api/agent-runtimes')
+      const claude = (data.runtimes || []).find((r) => r.id === 'claude')
+      if (claude) {
+        setVersion(claude.version)
+        if (claude.authenticated) setStep('done')
+        else setStep('auth')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Check failed')
+      // Preserve graceful degradation: the original `if (res.ok)` guard left
+      // state untouched on a non-ok response (no error surfaced). apiFetch
+      // throws on 401/403/404/5xx, so swallow ApiError to match. Genuine
+      // network/parse failures still surface "Check failed" as before.
+      if (err instanceof ApiError) {
+        // no-op — matches the original `if (res.ok)` with no else branch
+      } else {
+        setError(err instanceof Error ? err.message : 'Check failed')
+      }
     } finally {
       setChecking(false)
     }
@@ -1117,7 +1219,6 @@ function ClaudeSetup({ onClose, onComplete }: { onClose: () => void; onComplete:
 function CodexSetup({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
   const [step, setStep] = useState<'check' | 'auth' | 'done'>('check')
   const [checking, setChecking] = useState(false)
-  const [authenticated, setAuthenticated] = useState(false)
   const [version, setVersion] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -1125,19 +1226,23 @@ function CodexSetup({ onClose, onComplete }: { onClose: () => void; onComplete: 
     setChecking(true)
     setError(null)
     try {
-      const res = await fetch('/api/agent-runtimes')
-      if (res.ok) {
-        const data = await res.json()
-        const codex = (data.runtimes || []).find((r: any) => r.id === 'codex')
-        if (codex) {
-          setAuthenticated(codex.authenticated)
-          setVersion(codex.version)
-          if (codex.authenticated) setStep('done')
-          else setStep('auth')
-        }
+      const data = await apiFetch<{ runtimes?: Array<{ id: string; version: string; authenticated?: boolean }> }>('/api/agent-runtimes')
+      const codex = (data.runtimes || []).find((r) => r.id === 'codex')
+      if (codex) {
+        setVersion(codex.version)
+        if (codex.authenticated) setStep('done')
+        else setStep('auth')
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Check failed')
+      // Preserve graceful degradation: the original `if (res.ok)` guard left
+      // state untouched on a non-ok response (no error surfaced). apiFetch
+      // throws on 401/403/404/5xx, so swallow ApiError to match. Genuine
+      // network/parse failures still surface "Check failed" as before.
+      if (err instanceof ApiError) {
+        // no-op — matches the original `if (res.ok)` with no else branch
+      } else {
+        setError(err instanceof Error ? err.message : 'Check failed')
+      }
     } finally {
       setChecking(false)
     }

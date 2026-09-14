@@ -111,7 +111,8 @@
     },
     "collapseSidebar": "Recolher barra lateral",
     "expandSidebar": "Expandir barra lateral",
-    "more": "Mais"
+    "more": "Mais",
+    "logout": "Sair"
   },
   "settings": {
     "language": "Idioma",
@@ -747,13 +748,17 @@
     "spawnSubAgent": "Criar sub-agente",
     "newTask": "Nova tarefa",
     "refresh": "Atualizar",
+    "loadingTasks": "Carregando tarefas...",
     "spawnAgentPlaceholder": "Nome do agente",
     "spawnTaskPlaceholder": "Descrição da tarefa",
+    "spawnLabelPlaceholder": "Rótulo da tarefa",
     "timeoutTitle": "Tempo limite (minutos)",
+    "timeoutSeconds": "Tempo limite (segundos)",
     "spawning": "Criando...",
     "spawn": "Criar",
     "noActiveSpawnRequests": "Sem solicitações de criação ativas",
     "dismissError": "Fechar erro",
+    "taskBoard": "Quadro de tarefas",
     "taskBoardAriaLabel": "Quadro de tarefas",
     "columnAriaLabel": "Coluna {title}, {count} tarefas",
     "colBacklog": "Pendentes",
@@ -855,6 +860,7 @@
     "today": "Hoje",
     "next": "Próximo",
     "calMode_agenda": "Agenda",
+    "calMode_day": "Dia",
     "calMode_week": "Semana",
     "calMode_month": "Mês",
     "searchPlaceholder": "Pesquisar jobs...",
@@ -1160,7 +1166,15 @@
     "decommissionQueuedDryRun": "Simulação de desativação enfileirada para {slug}",
     "decommissionQueued": "Desativação enfileirada para {slug}",
     "optionalReason": "Motivo opcional para {action}:",
-    "jobActioned": "Trabalho #{jobId} foi {action}"
+    "jobActioned": "Trabalho #{jobId} foi {action}",
+    "workspaceFieldsTitle": "Espaços de trabalho",
+    "workspaceFieldsDesc": "Etiqueta de marca e isolamento de memória dos agentes por espaço de trabalho.",
+    "workspaceBrandPlaceholder": "Marca (opcional)",
+    "isolationShared": "Compartilhado",
+    "isolationStrict": "Estrito",
+    "save": "Salvar",
+    "saving": "Salvando...",
+    "workspaceFieldsSaved": "Espaço de trabalho {name} atualizado"
   },
   "auditTrail": {
     "title": "Trilha de auditoria",

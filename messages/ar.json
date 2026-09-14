@@ -111,7 +111,8 @@
     },
     "collapseSidebar": "طي الشريط الجانبي",
     "expandSidebar": "توسيع الشريط الجانبي",
-    "more": "المزيد"
+    "more": "المزيد",
+    "logout": "تسجيل الخروج"
   },
   "settings": {
     "language": "اللغة",
@@ -747,13 +748,17 @@
     "spawnSubAgent": "إنشاء عميل فرعي",
     "newTask": "مهمة جديدة",
     "refresh": "تحديث",
+    "loadingTasks": "جارٍ تحميل المهام...",
     "spawnAgentPlaceholder": "اسم العميل",
     "spawnTaskPlaceholder": "وصف المهمة",
+    "spawnLabelPlaceholder": "تسمية المهمة",
     "timeoutTitle": "المهلة الزمنية (دقائق)",
+    "timeoutSeconds": "المهلة (بالثواني)",
     "spawning": "جارٍ الإنشاء...",
     "spawn": "إنشاء",
     "noActiveSpawnRequests": "لا توجد طلبات إنشاء نشطة",
     "dismissError": "إغلاق الخطأ",
+    "taskBoard": "لوحة المهام",
     "taskBoardAriaLabel": "لوحة المهام",
     "columnAriaLabel": "عمود {title}، {count} مهمة",
     "colBacklog": "قائمة الانتظار",
@@ -855,6 +860,7 @@
     "today": "اليوم",
     "next": "التالي",
     "calMode_agenda": "الأجندة",
+    "calMode_day": "اليوم",
     "calMode_week": "الأسبوع",
     "calMode_month": "الشهر",
     "searchPlaceholder": "البحث في المهام...",
@@ -1160,7 +1166,15 @@
     "decommissionQueuedDryRun": "تمت إضافة إيقاف التشغيل التجريبي لـ {slug} لقائمة الانتظار",
     "decommissionQueued": "تمت إضافة إيقاف تشغيل {slug} لقائمة الانتظار",
     "optionalReason": "سبب اختياري لـ {action}:",
-    "jobActioned": "تم {action} الوظيفة #{jobId}"
+    "jobActioned": "تم {action} الوظيفة #{jobId}",
+    "workspaceFieldsTitle": "مساحات العمل",
+    "workspaceFieldsDesc": "وسم العلامة التجارية وعزل ذاكرة الوكلاء لكل مساحة عمل.",
+    "workspaceBrandPlaceholder": "العلامة التجارية (اختياري)",
+    "isolationShared": "مشترك",
+    "isolationStrict": "صارم",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ...",
+    "workspaceFieldsSaved": "تم تحديث مساحة العمل {name}"
   },
   "auditTrail": {
     "title": "مسار التدقيق",

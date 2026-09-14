@@ -146,7 +146,7 @@ export function AuditTrailPanel() {
     } finally {
       setLoading(false)
     }
-  }, [filter, page])
+  }, [filter, page, t])
 
   useEffect(() => { fetchEvents() }, [fetchEvents])
   useSmartPoll(fetchEvents, 30000, { pauseWhenDisconnected: true })
@@ -224,7 +224,7 @@ export function AuditTrailPanel() {
         <select
           value={filter.action}
           onChange={e => { setFilter(f => ({ ...f, action: e.target.value })); setPage(0) }}
-          className="h-8 px-2 text-xs rounded-md bg-secondary border border-border text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+          className="h-8 px-2 text-xs rounded-md bg-secondary border border-border text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
         >
           <option value="">{t('allActions')}</option>
           <optgroup label={t('groupAuth')}>
@@ -278,7 +278,7 @@ export function AuditTrailPanel() {
           value={filter.actor}
           onChange={e => { setFilter(f => ({ ...f, actor: e.target.value })); setPage(0) }}
           placeholder={t('filterByActor')}
-          className="h-8 px-2.5 text-xs rounded-md bg-secondary border border-border text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary w-40"
+          className="h-8 px-2.5 text-xs rounded-md bg-secondary border border-border text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-primary w-40"
         />
       </div>
 

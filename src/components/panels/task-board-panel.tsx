@@ -1,10 +1,12 @@
 'use client'
 
 import { useTranslations } from 'next-intl'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useMissionControl } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { apiFetch, ApiError } from '@/lib/api-client'
+import { countCommentsDeep } from '@/lib/comment-utils'
 
 import { createClientLogger } from '@/lib/client-logger'
 
@@ -35,6 +37,8 @@ interface Task {
   due_date?: number
   estimated_hours?: number
   actual_hours?: number
+  error_message?: string
+  resolution?: string
   tags?: string[]
   metadata?: any
   aegisApproved?: boolean
@@ -49,7 +53,6 @@ interface Task {
   github_pr_number?: number
   github_pr_state?: string
   comment_count?: number
-  error_message?: string
   dispatch_attempts?: number
   observability?: TaskObservabilityPreview
 }
@@ -140,8 +143,7 @@ function useAgentSessions(agentName: string | undefined) {
   useEffect(() => {
     if (!agentName) { setSessions([]); return }
     let cancelled = false
-    fetch('/api/sessions')
-      .then(r => r.json())
+    apiFetch<{ sessions?: Array<{ key: string; id: string; agent?: string; channel?: string; kind?: string; label?: string; active?: boolean }> }>('/api/sessions')
       .then(data => {
         if (cancelled) return
         const all = (data.sessions || []) as Array<{ key: string; id: string; agent?: string; channel?: string; kind?: string; label?: string; active?: boolean }>
@@ -178,12 +180,10 @@ function useMentionTargets() {
     let cancelled = false
     const run = async () => {
       try {
-        const response = await fetch('/api/mentions?limit=200')
-        if (!response.ok) return
-        const data = await response.json()
+        const data = await apiFetch<{ mentions?: MentionOption[] }>('/api/mentions?limit=200')
         if (!cancelled) setMentionTargets(data.mentions || [])
       } catch {
-        // mention autocomplete is non-critical
+        // mention autocomplete is non-critical (apiFetch throws on non-2xx; ignored)
       }
     }
     run()
@@ -281,7 +281,13 @@ function MentionTextarea({
           detectMentionQuery(nextValue, e.target.selectionStart || 0)
         }}
         onClick={(e) => detectMentionQuery(value, (e.target as HTMLTextAreaElement).selectionStart || 0)}
-        onKeyUp={(e) => detectMentionQuery(value, (e.target as HTMLTextAreaElement).selectionStart || 0)}
+        onKeyUp={(e) => {
+          // Menu-navigation keys are fully handled in onKeyDown; re-running
+          // detectMentionQuery on their keyup would setActiveIndex(0) and
+          // reset the highlighted option on every arrow press (#661).
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') return
+          detectMentionQuery(value, (e.target as HTMLTextAreaElement).selectionStart || 0)
+        }}
         onKeyDown={(e) => {
           if (!open || filtered.length === 0) return
           if (e.key === 'ArrowDown') {
@@ -308,7 +314,7 @@ function MentionTextarea({
         className={className}
       />
       {open && filtered.length > 0 && (
-        <div className={`absolute z-[60] w-full bg-surface-1 border border-border rounded-md shadow-xl max-h-56 overflow-y-auto ${
+        <div className={`absolute z-60 w-full bg-surface-1 border border-border rounded-md shadow-xl max-h-56 overflow-y-auto ${
           openUpwards ? 'bottom-full mb-1' : 'mt-1'
         }`}>
           {filtered.map((option, index) => (
@@ -345,12 +351,10 @@ function DunkItButton({ taskId, onDunked }: { taskId: number; onDunked: (id: num
     e.stopPropagation()
     if (phase !== 'idle') return
     try {
-      const res = await fetch(`/api/tasks/${taskId}`, {
+      await apiFetch(`/api/tasks/${taskId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'done' }),
       })
-      if (!res.ok) throw new Error('Failed')
       setPhase('success')
       setTimeout(() => {
         setPhase('dismissing')
@@ -459,19 +463,21 @@ export function TaskBoardPanel() {
       }
       const tasksUrl = tasksQuery.toString() ? `/api/tasks?${tasksQuery.toString()}` : '/api/tasks'
 
-      const [tasksResponse, agentsResponse, projectsResponse] = await Promise.all([
-        fetch(tasksUrl),
-        fetch('/api/agents'),
-        fetch('/api/projects')
-      ])
-
-      if (!tasksResponse.ok || !agentsResponse.ok || !projectsResponse.ok) {
-        throw new Error('Failed to fetch data')
+      let tasksData: { tasks?: Task[] }
+      let agentsData: { agents?: Agent[] }
+      let projectsData: { projects?: Project[] }
+      try {
+        [tasksData, agentsData, projectsData] = await Promise.all([
+          apiFetch<{ tasks?: Task[] }>(tasksUrl),
+          apiFetch<{ agents?: Agent[] }>('/api/agents'),
+          apiFetch<{ projects?: Project[] }>('/api/projects'),
+        ])
+      } catch (err) {
+        // Preserve the original aggregate error message regardless of which call failed.
+        // apiFetch already handled the 401 redirect for UNAUTHENTICATED before throwing.
+        if (err instanceof ApiError) throw new Error('Failed to fetch data')
+        throw err
       }
-
-      const tasksData = await tasksResponse.json()
-      const agentsData = await agentsResponse.json()
-      const projectsData = await projectsResponse.json()
 
       const tasksList = tasksData.tasks || []
       const taskIds = tasksList.map((task: Task) => task.id)
@@ -482,8 +488,7 @@ export function TaskBoardPanel() {
       setProjects(projectsData.projects || [])
 
       if (taskIds.length > 0) {
-        fetch(`/api/quality-review?taskIds=${taskIds.join(',')}`)
-          .then((reviewResponse) => reviewResponse.ok ? reviewResponse.json() : null)
+        apiFetch<{ latest?: Record<string, { reviewer?: string; status?: string }> }>(`/api/quality-review?taskIds=${taskIds.join(',')}`)
           .then((reviewData) => {
             const latest = reviewData?.latest || {}
             const newAegisMap: Record<number, boolean> = Object.fromEntries(
@@ -513,8 +518,7 @@ export function TaskBoardPanel() {
 
   // Fetch GNAP status
   useEffect(() => {
-    fetch('/api/gnap')
-      .then(r => r.ok ? r.json() : null)
+    apiFetch<{ enabled: boolean; taskCount?: number; lastSync?: string } | null>('/api/gnap')
       .then(data => { if (data) setGnapStatus(data) })
       .catch(() => {})
   }, [])
@@ -522,11 +526,8 @@ export function TaskBoardPanel() {
   const handleGnapSync = useCallback(async () => {
     setGnapSyncing(true)
     try {
-      const res = await fetch('/api/gnap?action=sync', { method: 'POST' })
-      if (res.ok) {
-        const data = await res.json()
-        setGnapStatus(prev => prev ? { ...prev, taskCount: data.pushed, lastSync: data.lastSync } : prev)
-      }
+      const data = await apiFetch<{ pushed?: number; lastSync?: string }>('/api/gnap?action=sync', { method: 'POST' })
+      setGnapStatus(prev => prev ? { ...prev, taskCount: data.pushed, lastSync: data.lastSync } : prev)
     } catch { /* ignore */ }
     finally { setGnapSyncing(false) }
   }, [])
@@ -609,12 +610,14 @@ export function TaskBoardPanel() {
 
     try {
       if (newStatus === 'done') {
-        const reviewResponse = await fetch(`/api/quality-review?taskId=${draggedTask.id}`)
-        if (!reviewResponse.ok) {
-          throw new Error('Unable to verify Aegis approval')
+        let reviewData: { reviews?: Array<{ reviewer?: string; status?: string }> }
+        try {
+          reviewData = await apiFetch<{ reviews?: Array<{ reviewer?: string; status?: string }> }>(`/api/quality-review?taskId=${draggedTask.id}`)
+        } catch (reviewErr) {
+          if (reviewErr instanceof ApiError) throw new Error('Unable to verify Aegis approval')
+          throw reviewErr
         }
-        const reviewData = await reviewResponse.json()
-        const latest = reviewData.reviews?.find((review: any) => review.reviewer === 'aegis')
+        const latest = reviewData.reviews?.find((review) => review.reviewer === 'aegis')
         if (!latest || latest.status !== 'approved') {
           throw new Error('Aegis approval is required before moving to done')
         }
@@ -626,10 +629,11 @@ export function TaskBoardPanel() {
         updated_at: Math.floor(Date.now() / 1000)
       })
 
-      // Update on server
-      const response = await fetch('/api/tasks', {
+      // Update on server. raw:true preserves the original !response.ok semantics —
+      // task updates can return 400/422 validation errors that apiFetch would NOT throw on.
+      const response = await apiFetch<Response>('/api/tasks', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        raw: true,
         body: JSON.stringify({
           tasks: [{ id: draggedTask.id, status: newStatus }]
         })
@@ -682,9 +686,12 @@ export function TaskBoardPanel() {
     })
 
     try {
-      const response = await fetch('/api/spawn', {
+      // raw:true preserves the original semantics: the body is parsed and branched
+      // on result.success/result.error regardless of HTTP status (this endpoint never
+      // gated on response.ok).
+      const response = await apiFetch<Response>('/api/spawn', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        raw: true,
         body: JSON.stringify(spawnFormData),
       })
       const result = await response.json()
@@ -742,7 +749,7 @@ export function TaskBoardPanel() {
   if (loading) {
     return (
       <div className="h-full flex flex-col" role="status" aria-live="polite">
-        <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
+        <div className="flex justify-between items-center p-4 border-b border-border shrink-0">
           <div className="flex items-center gap-3">
             <div className="h-7 w-28 bg-surface-1 rounded-md animate-pulse" />
             <div className="h-9 w-36 bg-surface-1 rounded-md animate-pulse" />
@@ -782,7 +789,7 @@ export function TaskBoardPanel() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
+      <div className="flex justify-between items-center p-4 border-b border-border shrink-0">
         <div className="flex items-center gap-3">
           <h2 className="text-xl font-bold text-foreground">{t('title')}</h2>
           {gnapStatus?.enabled && (
@@ -807,7 +814,7 @@ export function TaskBoardPanel() {
             <select
               value={projectFilter}
               onChange={(e) => setProjectFilter(e.target.value)}
-              className="h-9 px-3 pr-8 bg-surface-1 text-foreground border border-border rounded-md text-sm appearance-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/50"
+              className="h-9 px-3 pr-8 bg-surface-1 text-foreground border border-border rounded-md text-sm appearance-none cursor-pointer focus:outline-hidden focus:ring-2 focus:ring-primary/50"
             >
               <option value="all">{t('allProjects')}</option>
               {projects.map((project) => (
@@ -851,7 +858,7 @@ export function TaskBoardPanel() {
                 value={spawnFormData.task}
                 onChange={(e) => setSpawnFormData(prev => ({ ...prev, task: e.target.value }))}
                 placeholder={t('spawnTaskPlaceholder')}
-                className="w-full h-20 px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm placeholder-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
+                className="w-full h-20 px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm placeholder-muted-foreground resize-none focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                 disabled={isSpawning}
               />
               <div className="flex gap-2">
@@ -860,13 +867,13 @@ export function TaskBoardPanel() {
                   value={spawnFormData.label}
                   onChange={(e) => setSpawnFormData(prev => ({ ...prev, label: e.target.value }))}
                   placeholder={t('spawnLabelPlaceholder')}
-                  className="flex-1 px-3 py-1.5 border border-border rounded-md bg-background text-foreground text-sm placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="flex-1 px-3 py-1.5 border border-border rounded-md bg-background text-foreground text-sm placeholder-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                   disabled={isSpawning}
                 />
                 <select
                   value={spawnFormData.model}
                   onChange={(e) => setSpawnFormData(prev => ({ ...prev, model: e.target.value }))}
-                  className="px-3 py-1.5 border border-border rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="px-3 py-1.5 border border-border rounded-md bg-background text-foreground text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                   disabled={isSpawning}
                 >
                   {availableModels.map((model) => (
@@ -879,7 +886,7 @@ export function TaskBoardPanel() {
                   max="3600"
                   value={spawnFormData.timeoutSeconds}
                   onChange={(e) => setSpawnFormData(prev => ({ ...prev, timeoutSeconds: parseInt(e.target.value) || 300 }))}
-                  className="w-20 px-2 py-1.5 border border-border rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="w-20 px-2 py-1.5 border border-border rounded-md bg-background text-foreground text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                   title={t('timeoutSeconds')}
                   disabled={isSpawning}
                 />
@@ -942,7 +949,7 @@ export function TaskBoardPanel() {
             key={column.key}
             role="region"
             aria-label={t('columnAriaLabel', { title: column.title, count: tasksByStatus[column.key]?.length || 0 })}
-            className="flex-1 min-w-80 min-h-0 bg-surface-0 border border-border/60 rounded-xl flex flex-col transition-colors duration-200 [&.drag-over]:border-primary/40 [&.drag-over]:bg-primary/[0.02]"
+            className="flex-1 min-w-80 min-h-0 bg-surface-0 border border-border/60 rounded-xl flex flex-col transition-colors duration-200 [&.drag-over]:border-primary/40 [&.drag-over]:bg-primary/2"
             onDragEnter={(e) => handleDragEnter(e, column.key)}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
@@ -951,7 +958,7 @@ export function TaskBoardPanel() {
             {/* Column Header */}
             <div className={`${column.color} px-4 py-3 rounded-t-xl flex justify-between items-center border-b border-border/30`}>
               <h3 className="font-semibold text-sm tracking-wide">{column.title}</h3>
-              <span className="text-xs font-mono bg-white/10 px-2 py-0.5 rounded-md min-w-[1.75rem] text-center">
+              <span className="text-xs font-mono bg-white/10 px-2 py-0.5 rounded-md min-w-7 text-center">
                 {tasksByStatus[column.key]?.length || 0}
               </span>
             </div>
@@ -977,9 +984,9 @@ export function TaskBoardPanel() {
                       updateTaskUrl(task.id)
                     }
                   }}
-                  className={`group bg-card rounded-lg p-3 cursor-pointer border border-border/40 shadow-sm hover:shadow-md hover:shadow-black/10 hover:border-border/70 transition-all duration-200 ease-out border-l-4 ${priorityColors[task.priority]} ${
+                  className={`group bg-card rounded-lg p-3 cursor-pointer border border-border/40 shadow-xs hover:shadow-md hover:shadow-black/10 hover:border-border/70 transition-all duration-200 ease-out border-l-4 ${priorityColors[task.priority]} ${
                     draggedTask?.id === task.id ? 'opacity-40 scale-[0.97] rotate-1' : ''
-                  } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
+                  } focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background`}
                 >
                   {/* Drag handle + Title row */}
                   <div className="flex items-start gap-2 mb-2">
@@ -1068,7 +1075,7 @@ export function TaskBoardPanel() {
                       {task.assigned_to ? (
                         <>
                           <AgentAvatar name={getAgentName(task.assigned_to)} size="xs" />
-                          <span className="truncate max-w-[8rem]">{getAgentName(task.assigned_to)}</span>
+                          <span className="truncate max-w-32">{getAgentName(task.assigned_to)}</span>
                         </>
                       ) : (
                         <span className="text-muted-foreground/50 italic">{t('unassigned')}</span>
@@ -1273,27 +1280,33 @@ function TaskDetailModal({
 
   const fetchReviews = useCallback(async () => {
     try {
-      const response = await fetch(`/api/quality-review?taskId=${task.id}`)
-      if (!response.ok) throw new Error('Failed to fetch reviews')
-      const data = await response.json()
+      const data = await apiFetch<{ reviews?: any[] }>(`/api/quality-review?taskId=${task.id}`)
       setReviews(data.reviews || [])
     } catch (error) {
       setReviewError('Failed to load quality reviews')
     }
   }, [task.id])
 
+  // Tracks whether comments have been loaded at least once, so the background
+  // poll doesn't flip loadingComments (which would unmount the comment list and
+  // reset the user's scroll position every 15s — issue #660).
+  const commentsLoadedRef = useRef(false)
   const fetchComments = useCallback(async () => {
     try {
-      setLoadingComments(true)
-      const response = await fetch(`/api/tasks/${task.id}/comments`)
-      if (!response.ok) throw new Error('Failed to fetch comments')
-      const data = await response.json()
+      if (!commentsLoadedRef.current) setLoadingComments(true)
+      const data = await apiFetch<{ comments?: Comment[] }>(`/api/tasks/${task.id}/comments`)
       setComments(data.comments || [])
+      commentsLoadedRef.current = true
     } catch (error) {
       setCommentError('Failed to load comments')
     } finally {
       setLoadingComments(false)
     }
+  }, [task.id])
+
+  // Reset the first-load guard when switching to a different task.
+  useEffect(() => {
+    commentsLoadedRef.current = false
   }, [task.id])
 
   useEffect(() => {
@@ -1302,8 +1315,13 @@ function TaskDetailModal({
   useEffect(() => {
     fetchReviews()
   }, [fetchReviews])
-  
+
   useSmartPoll(fetchComments, 15000)
+
+  // Count ALL comments (top-level + nested replies) so the comments-tab badge
+  // matches the task-card badge, which uses a flat COUNT(*) over the comments
+  // table. `comments.length` alone counts only top-level threads (issue #664).
+  const totalCommentCount = useMemo(() => countCommentsDeep(comments), [comments])
 
   const handleAddComment = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -1311,9 +1329,11 @@ function TaskDetailModal({
 
     try {
       setCommentError(null)
-      const response = await fetch(`/api/tasks/${task.id}/comments`, {
+      // raw:true preserves the original !response.ok gate (covers 400/422 validation
+      // errors that apiFetch would otherwise treat as success).
+      const response = await apiFetch<Response>(`/api/tasks/${task.id}/comments`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        raw: true,
         body: JSON.stringify({
           author: commentAuthor || 'system',
           content: commentText
@@ -1334,9 +1354,10 @@ function TaskDetailModal({
 
     try {
       setBroadcastStatus(null)
-      const response = await fetch(`/api/tasks/${task.id}/broadcast`, {
+      // raw:true preserves the unconditional body parse + !response.ok gate.
+      const response = await apiFetch<Response>(`/api/tasks/${task.id}/broadcast`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        raw: true,
         body: JSON.stringify({
           author: commentAuthor || 'system',
           message: broadcastMessage
@@ -1355,9 +1376,10 @@ function TaskDetailModal({
     e.preventDefault()
     try {
       setReviewError(null)
-      const response = await fetch('/api/quality-review', {
+      // raw:true preserves the unconditional body parse + !response.ok gate.
+      const response = await apiFetch<Response>('/api/quality-review', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        raw: true,
         body: JSON.stringify({
           taskId: task.id,
           reviewer,
@@ -1455,6 +1477,7 @@ function TaskDetailModal({
     review: 'bg-purple-500/15 text-purple-400 border-purple-500/25',
     quality_review: 'bg-purple-500/15 text-purple-400 border-purple-500/25',
     done: 'bg-green-500/15 text-green-400 border-green-500/25',
+    failed: 'bg-red-500/15 text-red-400 border-red-500/25',
     awaiting_owner: 'bg-orange-500/15 text-orange-400 border-orange-500/25',
   }
 
@@ -1467,7 +1490,7 @@ function TaskDetailModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="task-detail-title" className="bg-card border border-border rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl shadow-black/30">
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-border/50">
@@ -1498,7 +1521,9 @@ function TaskDetailModal({
                 onClick={async () => {
                   if (!confirm(t('deleteTaskConfirm', { title: task.title }))) return
                   try {
-                    const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
+                    // raw:true preserves reading the server error body on !res.ok to
+                    // surface the precise message in the alert.
+                    const res = await apiFetch<Response>(`/api/tasks/${task.id}`, { method: 'DELETE', raw: true })
                     if (!res.ok) {
                       const errorData = await res.json().catch(() => ({ error: 'Failed to delete task' }))
                       throw new Error(errorData.error || 'Failed to delete task')
@@ -1548,9 +1573,11 @@ function TaskDetailModal({
             <button
               onClick={async () => {
                 try {
-                  const res = await fetch(`/api/tasks/${task.id}`, {
+                  // raw:true preserves the `if (res.ok) onClose()` gate so a 400/422
+                  // does not incorrectly close the modal.
+                  const res = await apiFetch<Response>(`/api/tasks/${task.id}`, {
                     method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
+                    raw: true,
                     body: JSON.stringify({ status: 'assigned', dispatch_attempts: 0, error_message: null }),
                   })
                   if (res.ok) onClose()
@@ -1587,8 +1614,8 @@ function TaskDetailModal({
                     : tab === 'quality'
                       ? t('tabQualityReview')
                       : 'Langfuse Trace'}
-                {tab === 'comments' && comments.length > 0 && (
-                  <span className="ml-1.5 text-[10px] text-muted-foreground/60">{comments.length}</span>
+                {tab === 'comments' && totalCommentCount > 0 && (
+                  <span className="ml-1.5 text-[10px] text-muted-foreground/60">{totalCommentCount}</span>
                 )}
                 {tab === 'langfuse' && task.observability?.hasTrace && (
                   <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-cyan-400" />
@@ -1622,14 +1649,15 @@ function TaskDetailModal({
               <div className="flex items-center gap-3 p-3 rounded-lg bg-secondary/30 border border-border/30">
                 <span className="text-xs text-muted-foreground shrink-0">{t('assignedTo')}</span>
                 <select
-                  className="flex-1 text-xs bg-card border border-border rounded-md px-2 py-1.5 text-foreground cursor-pointer focus:ring-1 focus:ring-primary/50 focus:border-primary/50 outline-none transition-colors"
+                  className="flex-1 text-xs bg-card border border-border rounded-md px-2 py-1.5 text-foreground cursor-pointer focus:ring-1 focus:ring-primary/50 focus:border-primary/50 outline-hidden transition-colors"
                   value={task.assigned_to || ''}
                   onChange={async (e) => {
                     const newAssignee = e.target.value || null
                     try {
-                      const res = await fetch(`/api/tasks/${task.id}`, {
+                      // raw:true preserves the !res.ok gate so onUpdate only runs on success.
+                      const res = await apiFetch<Response>(`/api/tasks/${task.id}`, {
                         method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
+                        raw: true,
                         body: JSON.stringify({ assigned_to: newAssignee }),
                       })
                       if (!res.ok) throw new Error('Failed to assign')
@@ -1646,6 +1674,17 @@ function TaskDetailModal({
                 </select>
                 {task.assigned_to && <AgentAvatar name={task.assigned_to} size="xs" />}
               </div>
+
+              {task.status === 'failed' && task.error_message && (
+                <div className="rounded-lg border border-red-500/25 bg-red-500/10 p-3">
+                  <div className="text-[10px] font-medium uppercase tracking-wider text-red-400/80">
+                    Failure reason
+                  </div>
+                  <div className="mt-2 whitespace-pre-wrap wrap-break-word text-xs leading-relaxed text-red-100/90">
+                    {task.error_message}
+                  </div>
+                </div>
+              )}
 
               {/* Metadata grid */}
               <div className="grid grid-cols-2 gap-3 text-xs">
@@ -1762,7 +1801,7 @@ function TaskDetailModal({
                 <MentionTextarea
                   value={commentText}
                   onChange={setCommentText}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   rows={3}
                   mentionTargets={mentionTargets}
                 />
@@ -1790,7 +1829,7 @@ function TaskDetailModal({
                 <MentionTextarea
                   value={broadcastMessage}
                   onChange={setBroadcastMessage}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   rows={2}
                   placeholder={t('broadcastPlaceholder')}
                   mentionTargets={mentionTargets}
@@ -1889,13 +1928,18 @@ function TaskSessionFeed({ sessionId, agentName, isLive }: { sessionId: string; 
 
   const fetchTranscript = useCallback(async () => {
     try {
-      const res = await fetch(`/api/sessions/transcript?kind=claude-code&id=${encodeURIComponent(sessionId)}&limit=100`)
-      if (!res.ok) throw new Error(`Failed to fetch transcript: ${res.status}`)
-      const data = await res.json()
+      const data = await apiFetch<{ messages?: SessionTranscriptMessage[] }>(
+        `/api/sessions/transcript?kind=claude-code&id=${encodeURIComponent(sessionId)}&limit=100`
+      )
       setMessages(data.messages || [])
       setError(null)
     } catch (err: any) {
-      setError(err.message || 'Failed to load session transcript')
+      // Preserve the original status-bearing message format on non-2xx responses.
+      if (err instanceof ApiError) {
+        setError(`Failed to fetch transcript: ${err.status}`)
+      } else {
+        setError(err?.message || 'Failed to load session transcript')
+      }
     } finally {
       setLoading(false)
     }
@@ -1976,8 +2020,7 @@ function ClaudeCodeTasksSection() {
 
   useEffect(() => {
     if (!expanded || loaded) return
-    fetch('/api/claude-tasks')
-      .then(r => r.json())
+    apiFetch<{ teams: any[]; tasks: any[] }>('/api/claude-tasks')
       .then(d => { setData(d); setLoaded(true) })
       .catch(() => setLoaded(true))
   }, [expanded, loaded])
@@ -2060,8 +2103,7 @@ function HermesCronSection() {
 
   useEffect(() => {
     if (!expanded || loaded) return
-    fetch('/api/hermes/tasks')
-      .then(r => r.json())
+    apiFetch<{ cronJobs: any[] }>('/api/hermes/tasks')
       .then(d => { setData(d); setLoaded(true) })
       .catch(() => setLoaded(true))
   }, [expanded, loaded])
@@ -2146,7 +2188,9 @@ function CreateTaskModal({
     setParsedSchedule(null)
     if (!value.trim()) return
     try {
-      const res = await fetch(`/api/schedule-parse?input=${encodeURIComponent(value.trim())}`)
+      // raw:true preserves the unconditional body parse + body-shape branching
+      // (a non-ok response without cronExpr still yields 'Could not parse schedule').
+      const res = await apiFetch<Response>(`/api/schedule-parse?input=${encodeURIComponent(value.trim())}`, { raw: true })
       const data = await res.json()
       if (data.cronExpr) {
         setParsedSchedule(data)
@@ -2180,9 +2224,11 @@ function CreateTaskModal({
     }
 
     try {
-      const response = await fetch('/api/tasks', {
+      // raw:true preserves reading the validation error body (details/error) on
+      // !response.ok — 400/422 validation responses that apiFetch would not throw on.
+      const response = await apiFetch<Response>('/api/tasks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        raw: true,
         body: JSON.stringify({
           ...formData,
           project_id: formData.project_id ? Number(formData.project_id) : undefined,
@@ -2208,7 +2254,7 @@ function CreateTaskModal({
   const dialogRef = useFocusTrap(onClose)
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="create-task-title" className="bg-card border border-border rounded-lg max-w-md w-full">
         <form onSubmit={handleSubmit} className="p-6">
           <h3 id="create-task-title" className="text-xl font-bold text-foreground mb-4">{t('createNewTask')}</h3>
@@ -2221,7 +2267,7 @@ function CreateTaskModal({
                 type="text"
                 value={formData.title}
                 onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 required
               />
             </div>
@@ -2232,7 +2278,7 @@ function CreateTaskModal({
                 id="create-description"
                 value={formData.description}
                 onChange={(next) => setFormData(prev => ({ ...prev, description: next }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 rows={3}
                 mentionTargets={mentionTargets}
               />
@@ -2246,7 +2292,7 @@ function CreateTaskModal({
                   id="create-priority"
                   value={formData.priority}
                   onChange={(e) => setFormData(prev => ({ ...prev, priority: e.target.value as Task['priority'] }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 >
                   <option value="low">{t('priority_low')}</option>
                   <option value="medium">{t('priority_medium')}</option>
@@ -2261,7 +2307,7 @@ function CreateTaskModal({
                   id="create-project"
                   value={formData.project_id}
                   onChange={(e) => setFormData(prev => ({ ...prev, project_id: e.target.value }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 >
                   {projects.map(project => (
                     <option key={project.id} value={String(project.id)}>
@@ -2278,7 +2324,7 @@ function CreateTaskModal({
                 id="create-assignee"
                 value={formData.assigned_to}
                 onChange={(e) => setFormData(prev => ({ ...prev, assigned_to: e.target.value, target_session: '' }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
               >
                 <option value="">{t('unassigned')}</option>
                 {agents.map(agent => (
@@ -2296,7 +2342,7 @@ function CreateTaskModal({
                   id="create-target-session"
                   value={formData.target_session}
                   onChange={(e) => setFormData(prev => ({ ...prev, target_session: e.target.value }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 >
                   <option value="">New session (default)</option>
                   {agentSessions.map(s => (
@@ -2316,7 +2362,7 @@ function CreateTaskModal({
                 type="text"
                 value={formData.tags}
                 onChange={(e) => setFormData(prev => ({ ...prev, tags: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 placeholder="frontend, urgent, bug"
               />
             </div>
@@ -2345,7 +2391,7 @@ function CreateTaskModal({
                     type="text"
                     value={scheduleInput}
                     onChange={(e) => handleScheduleChange(e.target.value)}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     placeholder='e.g. "every morning at 9am" or "every 2 hours"'
                   />
                   {parsedSchedule && (
@@ -2417,9 +2463,11 @@ function EditTaskModal({
         delete updatedMeta.target_session
       }
 
-      const response = await fetch(`/api/tasks/${task.id}`, {
+      // raw:true preserves reading the validation error body (details/error) on
+      // !response.ok — 400/422 validation responses that apiFetch would not throw on.
+      const response = await apiFetch<Response>(`/api/tasks/${task.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        raw: true,
         body: JSON.stringify({
           ...formData,
           project_id: formData.project_id ? Number(formData.project_id) : undefined,
@@ -2444,7 +2492,7 @@ function EditTaskModal({
   const dialogRef = useFocusTrap(onClose)
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="edit-task-title" className="bg-card border border-border rounded-lg max-w-md w-full">
         <form onSubmit={handleSubmit} className="p-6">
           <h3 id="edit-task-title" className="text-xl font-bold text-foreground mb-4">{t('editTask')}</h3>
@@ -2457,7 +2505,7 @@ function EditTaskModal({
                 type="text"
                 value={formData.title}
                 onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 required
               />
             </div>
@@ -2468,7 +2516,7 @@ function EditTaskModal({
                 id="edit-description"
                 value={formData.description}
                 onChange={(next) => setFormData(prev => ({ ...prev, description: next }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 rows={3}
                 mentionTargets={mentionTargets}
               />
@@ -2482,7 +2530,7 @@ function EditTaskModal({
                   id="edit-status"
                   value={formData.status}
                   onChange={(e) => setFormData(prev => ({ ...prev, status: e.target.value as Task['status'] }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 >
                   <option value="inbox">{t('colInbox')}</option>
                   <option value="assigned">{t('colAssigned')}</option>
@@ -2490,6 +2538,7 @@ function EditTaskModal({
                   <option value="review">{t('colReview')}</option>
                   <option value="quality_review">{t('colQualityReview')}</option>
                   <option value="done">{t('colDone')}</option>
+                  <option value="failed">{t('colFailed')}</option>
                 </select>
               </div>
 
@@ -2499,7 +2548,7 @@ function EditTaskModal({
                   id="edit-priority"
                   value={formData.priority}
                   onChange={(e) => setFormData(prev => ({ ...prev, priority: e.target.value as Task['priority'] }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 >
                   <option value="low">{t('priority_low')}</option>
                   <option value="medium">{t('priority_medium')}</option>
@@ -2515,7 +2564,7 @@ function EditTaskModal({
                 id="edit-project"
                 value={formData.project_id}
                 onChange={(e) => setFormData(prev => ({ ...prev, project_id: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
               >
                 {projects.map(project => (
                   <option key={project.id} value={String(project.id)}>
@@ -2531,7 +2580,7 @@ function EditTaskModal({
                 id="edit-assignee"
                 value={formData.assigned_to}
                 onChange={(e) => setFormData(prev => ({ ...prev, assigned_to: e.target.value, target_session: '' }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
               >
                 <option value="">{t('unassigned')}</option>
                 {agents.map(agent => (
@@ -2549,7 +2598,7 @@ function EditTaskModal({
                   id="edit-target-session"
                   value={formData.target_session}
                   onChange={(e) => setFormData(prev => ({ ...prev, target_session: e.target.value }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 >
                   <option value="">New session (default)</option>
                   {agentSessions.map(s => (
@@ -2569,7 +2618,7 @@ function EditTaskModal({
                 type="text"
                 value={formData.tags}
                 onChange={(e) => setFormData(prev => ({ ...prev, tags: e.target.value }))}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 placeholder="frontend, urgent, bug"
               />
             </div>

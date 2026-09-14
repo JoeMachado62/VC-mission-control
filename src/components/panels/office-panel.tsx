@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useMissionControl, Agent } from '@/store'
 import { buildOfficeLayout } from '@/lib/office-layout'
+import { apiFetch, ApiError } from '@/lib/api-client'
 
 type ViewMode = 'office' | 'org-chart'
 type OrgSegmentMode = 'category' | 'role' | 'status'
@@ -21,6 +22,24 @@ interface SessionAgentRow {
   active: boolean
   lastActivity?: number
   workingDir?: string | null
+}
+
+interface FlightDeckResponse {
+  installed: boolean
+  launched?: boolean
+  downloadUrl?: string
+  fallbackUrl?: string
+  error?: string
+}
+
+function getSafeHttpUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null
+  } catch {
+    return null
+  }
 }
 
 interface SeatPosition {
@@ -517,20 +536,20 @@ export function OfficePanel() {
     let nextSessionAgents: Agent[] = []
 
     try {
-      const [agentRes, sessionRes] = await Promise.all([
-        fetch('/api/agents'),
-        isLocalMode ? fetch('/api/sessions') : Promise.resolve(null),
+      const [agentData, sessionData] = await Promise.all([
+        apiFetch<{ agents?: Agent[] }>('/api/agents').catch(() => null),
+        isLocalMode
+          ? apiFetch<{ sessions?: SessionAgentRow[] }>('/api/sessions').catch(() => null)
+          : Promise.resolve(null),
       ])
 
-      if (agentRes.ok) {
-        const data = await agentRes.json()
-        nextLocalAgents = Array.isArray(data.agents) ? data.agents : []
+      if (agentData) {
+        nextLocalAgents = Array.isArray(agentData.agents) ? agentData.agents : []
         setLocalAgents(nextLocalAgents)
       }
 
-      if (isLocalMode && sessionRes?.ok) {
-        const sessionJson = await sessionRes.json().catch(() => ({}))
-        const rows = Array.isArray(sessionJson?.sessions) ? sessionJson.sessions as SessionAgentRow[] : []
+      if (isLocalMode && sessionData) {
+        const rows = Array.isArray(sessionData.sessions) ? sessionData.sessions : []
         const byAgent = new Map<string, Agent>()
         let idx = 0
 
@@ -1285,19 +1304,16 @@ export function OfficePanel() {
   const openFlightDeck = async (agent: Agent) => {
     setFlightDeckLaunching(true)
     try {
-      const res = await fetch('/api/local/flight-deck', {
+      const json = await apiFetch<FlightDeckResponse>('/api/local/flight-deck', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           agent: agent.name,
           session: agent.session_key || '',
         }),
       })
-      const json = await res.json().catch(() => ({}))
-      if (!res.ok || json?.installed === false) {
-        if (typeof json?.downloadUrl === 'string' && json.downloadUrl) {
-          setFlightDeckDownloadUrl(json.downloadUrl)
-        }
+      if (json.installed === false) {
+        const downloadUrl = getSafeHttpUrl(json.downloadUrl)
+        if (downloadUrl) setFlightDeckDownloadUrl(downloadUrl)
         setShowFlightDeckModal(true)
         showLaunchToast({
           kind: 'info',
@@ -1308,8 +1324,9 @@ export function OfficePanel() {
       }
       if (!json?.launched) {
         // Fallback for environments where native launch fails.
-        if (typeof json?.fallbackUrl === 'string' && json.fallbackUrl) {
-          window.open(json.fallbackUrl, '_blank', 'noopener,noreferrer')
+        const fallbackUrl = getSafeHttpUrl(json?.fallbackUrl)
+        if (fallbackUrl) {
+          window.open(fallbackUrl, '_blank', 'noopener,noreferrer')
           showLaunchToast({
             kind: 'info',
             title: 'Opened browser fallback',
@@ -1329,12 +1346,39 @@ export function OfficePanel() {
         title: 'Opened in Flight Deck',
         detail: 'Launched native Flight Deck app for this session.',
       })
-    } catch {
-      setShowFlightDeckModal(true)
+    } catch (err) {
+      const payload =
+        err instanceof ApiError && err.payload && typeof err.payload === 'object'
+          ? err.payload as Partial<FlightDeckResponse>
+          : null
+
+      if (payload?.installed === false) {
+        const downloadUrl = getSafeHttpUrl(payload.downloadUrl)
+        if (downloadUrl) setFlightDeckDownloadUrl(downloadUrl)
+        setShowFlightDeckModal(true)
+        showLaunchToast({
+          kind: 'info',
+          title: 'Flight Deck not installed',
+          detail: 'Install Flight Deck to open this session.',
+        })
+        return
+      }
+
+      const fallbackUrl = getSafeHttpUrl(payload?.fallbackUrl)
+      if (fallbackUrl) {
+        window.open(fallbackUrl, '_blank', 'noopener,noreferrer')
+        showLaunchToast({
+          kind: 'info',
+          title: 'Opened browser fallback',
+          detail: 'Native launch failed, opened Flight Deck web fallback.',
+        })
+        return
+      }
+
       showLaunchToast({
         kind: 'error',
         title: 'Flight Deck request failed',
-        detail: 'Could not reach local launch endpoint.',
+        detail: payload?.error || 'Could not reach local launch endpoint.',
       })
     } finally {
       setFlightDeckLaunching(false)
@@ -1678,7 +1722,7 @@ export function OfficePanel() {
             <div className="absolute inset-0 pointer-events-none z-0" style={{ backgroundImage: themePalette.shadowVeil }} />
             {timeTheme === 'dawn' && (
               <div
-                className="absolute inset-0 pointer-events-none z-[2]"
+                className="absolute inset-0 pointer-events-none z-2"
                 style={{
                   background: `linear-gradient(115deg, transparent 8%, ${themePalette.accentGlow} 24%, transparent 42%)`,
                   mixBlendMode: 'screen',
@@ -1689,7 +1733,7 @@ export function OfficePanel() {
             {timeTheme === 'day' && (
               <>
                 <div
-                  className="absolute inset-0 pointer-events-none z-[2]"
+                  className="absolute inset-0 pointer-events-none z-2"
                   style={{
                     background: `linear-gradient(112deg, transparent 10%, ${themePalette.accentGlow} 24%, transparent 44%)`,
                     mixBlendMode: 'screen',
@@ -1697,7 +1741,7 @@ export function OfficePanel() {
                   }}
                 />
                 <div
-                  className="absolute inset-0 pointer-events-none z-[2]"
+                  className="absolute inset-0 pointer-events-none z-2"
                   style={{
                     background: 'linear-gradient(96deg, transparent 24%, rgba(255,255,255,0.15) 38%, transparent 58%)',
                     mixBlendMode: 'screen',
@@ -1708,7 +1752,7 @@ export function OfficePanel() {
             )}
             {timeTheme === 'dusk' && (
               <div
-                className="absolute inset-0 pointer-events-none z-[2]"
+                className="absolute inset-0 pointer-events-none z-2"
                 style={{
                   background: `radial-gradient(circle at 50% 22%, ${themePalette.accentGlow} 0, transparent 56%)`,
                   mixBlendMode: 'screen',
@@ -1719,7 +1763,7 @@ export function OfficePanel() {
             {timeTheme === 'night' && (
               <>
                 <div
-                  className="absolute inset-0 pointer-events-none z-[2]"
+                  className="absolute inset-0 pointer-events-none z-2"
                   style={{
                     background: `radial-gradient(circle at 18% 12%, ${themePalette.accentGlow} 0, transparent 44%), radial-gradient(circle at 82% 16%, rgba(138,178,255,0.2) 0, transparent 42%)`,
                     mixBlendMode: 'screen',
@@ -1729,7 +1773,7 @@ export function OfficePanel() {
                 {nightSparkles.map((spark) => (
                   <div
                     key={`spark-${spark.id}`}
-                    className="absolute pointer-events-none z-[2] rounded-full bg-white/80"
+                    className="absolute pointer-events-none z-2 rounded-full bg-white/80"
                     style={{
                       left: `${spark.x}%`,
                       top: `${spark.y}%`,
@@ -1743,16 +1787,16 @@ export function OfficePanel() {
               </>
             )}
 
-            <div className="absolute left-[8%] top-[8%] rounded-md bg-card/80 backdrop-blur-sm border border-void-cyan/20 text-void-cyan text-xs px-2 py-1 font-mono z-30">
+            <div className="absolute left-[8%] top-[8%] rounded-md bg-card/80 backdrop-blur-xs border border-void-cyan/20 text-void-cyan text-xs px-2 py-1 font-mono z-30">
               {t('mainDeck')}
             </div>
-            <div className="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-foreground/90 px-2 py-1">
+            <div className="absolute right-3 top-3 z-30 flex items-center gap-1 rounded-md bg-card/80 backdrop-blur-xs border border-border text-foreground/90 px-2 py-1">
               <Button variant="ghost" size="xs" onClick={() => setMapZoom((z) => Math.max(0.8, Number((z - 0.1).toFixed(2))))} className="h-auto px-1.5 py-0.5 text-xs hover:bg-void-cyan/10">-</Button>
               <span className="text-[11px] font-mono w-10 text-center">{Math.round(mapZoom * 100)}%</span>
               <Button variant="ghost" size="xs" onClick={() => setMapZoom((z) => Math.min(2.2, Number((z + 0.1).toFixed(2))))} className="h-auto px-1.5 py-0.5 text-xs hover:bg-void-cyan/10">+</Button>
               <Button variant="ghost" size="xs" onClick={resetMapView} className="h-auto px-1.5 py-0.5 text-[11px] hover:bg-void-cyan/10">{t('resetView')}</Button>
             </div>
-            <div className="absolute right-3 top-12 z-30 flex items-center gap-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-foreground/90 px-2 py-1">
+            <div className="absolute right-3 top-12 z-30 flex items-center gap-1 rounded-md bg-card/80 backdrop-blur-xs border border-border text-foreground/90 px-2 py-1">
               {(['dawn', 'day', 'dusk', 'night'] as TimeTheme[]).map((item) => (
                 <Button
                   key={item}
@@ -1765,7 +1809,7 @@ export function OfficePanel() {
                 </Button>
               ))}
             </div>
-            <div className="absolute left-3 top-3 z-30 flex items-center gap-1 rounded-md bg-card/80 backdrop-blur-sm border border-border text-foreground/90 px-2 py-1">
+            <div className="absolute left-3 top-3 z-30 flex items-center gap-1 rounded-md bg-card/80 backdrop-blur-xs border border-border text-foreground/90 px-2 py-1">
               <Button variant="ghost" size="xs" onClick={() => setShowSidebar((v) => !v)} className="h-auto px-1.5 py-0.5 text-[10px] font-mono hover:bg-void-cyan/10">{showSidebar ? t('hideCrewButton') : t('showCrewButton')}</Button>
               <Button variant="ghost" size="xs" onClick={() => setShowMinimap((v) => !v)} className="h-auto px-1.5 py-0.5 text-[10px] font-mono hover:bg-void-cyan/10">{showMinimap ? t('hideRadarButton') : t('showRadarButton')}</Button>
               <Button variant="ghost" size="xs" onClick={() => setShowEvents((v) => !v)} className="h-auto px-1.5 py-0.5 text-[10px] font-mono hover:bg-void-cyan/10">{showEvents ? t('hideLogButton') : t('showLogButton')}</Button>
@@ -1780,7 +1824,7 @@ export function OfficePanel() {
                 {floorTiles.map((tile) => (
                   <div
                     key={tile.id}
-                    className="absolute border border-void-cyan/[0.06]"
+                    className="absolute border border-void-cyan/6"
                     style={{
                       left: `${tile.x}%`,
                       top: `${tile.y}%`,
@@ -1799,7 +1843,7 @@ export function OfficePanel() {
               <div className="absolute left-[14%] top-[45%] w-[72%] h-[6%] border-y border-void-cyan/15 shadow-[0_0_30px_hsl(var(--void-cyan)/0.1)]" style={{ backgroundColor: themePalette.corridor }} />
               <div className="absolute left-[14%] top-[47.6%] w-[72%] h-[0.7%]" style={{ backgroundColor: themePalette.corridorStripe }} />
 
-              <div className="absolute inset-0 pointer-events-none z-[1]">
+              <div className="absolute inset-0 pointer-events-none z-1">
                 {heatmapPoints.map((point) => (
                   <div
                     key={`heat-${point.id}`}
@@ -1852,7 +1896,7 @@ export function OfficePanel() {
                   }}
                 >
                   <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: `${themePalette.roomTone}, linear-gradient(to bottom right, rgba(255,255,255,0.08), transparent 45%)` }} />
-                  <div className="absolute left-2 top-1 rounded bg-card/70 backdrop-blur-sm border border-void-cyan/15 text-void-cyan/80 text-[9px] px-1.5 py-0.5 font-mono uppercase tracking-wide">
+                  <div className="absolute left-2 top-1 rounded bg-card/70 backdrop-blur-xs border border-void-cyan/15 text-void-cyan/80 text-[9px] px-1.5 py-0.5 font-mono uppercase tracking-wide">
                     {room.label}
                   </div>
                 </div>
@@ -2031,7 +2075,7 @@ export function OfficePanel() {
 
             {showMinimap && (
             <div
-              className="absolute right-3 bottom-3 z-30 w-44 h-28 rounded-md border border-void-cyan/15 bg-card/85 backdrop-blur-sm p-1.5"
+              className="absolute right-3 bottom-3 z-30 w-44 h-28 rounded-md border border-void-cyan/15 bg-card/85 backdrop-blur-xs p-1.5"
               onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation()
@@ -2072,7 +2116,7 @@ export function OfficePanel() {
 
             {showEvents && (
             <div
-              className="absolute left-3 bottom-3 z-30 w-72 rounded-md border border-void-cyan/15 bg-card/88 backdrop-blur-sm p-2.5 space-y-2"
+              className="absolute left-3 bottom-3 z-30 w-72 rounded-md border border-void-cyan/15 bg-card/88 backdrop-blur-xs p-2.5 space-y-2"
               onWheel={(event) => event.stopPropagation()}
             >
               <div className="text-[10px] text-void-cyan/60 font-mono uppercase tracking-wider">{t('deckLog')}</div>
@@ -2317,7 +2361,7 @@ export function OfficePanel() {
       )}
 
       {showFlightDeckModal && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" onClick={() => setShowFlightDeckModal(false)}>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-60 p-4" onClick={() => setShowFlightDeckModal(false)}>
           <div className="bg-card border border-border rounded-lg max-w-md w-full p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-3">
               <div>
@@ -2361,7 +2405,7 @@ export function OfficePanel() {
       )}
 
       {launchToast && (
-        <div className="fixed right-4 bottom-4 z-[70] max-w-sm rounded-lg border border-border bg-card/95 backdrop-blur px-4 py-3 shadow-2xl">
+        <div className="fixed right-4 bottom-4 z-70 max-w-sm rounded-lg border border-border bg-card/95 backdrop-blur-sm px-4 py-3 shadow-2xl">
           <div className="flex items-start gap-2">
             <span
               className={`mt-1 inline-block h-2.5 w-2.5 rounded-full ${

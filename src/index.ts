@@ -2,6 +2,7 @@
 
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
+import { MODEL_CATALOG } from '@/lib/models'
 
 // Enhanced types for Mission Control
 export interface Session {
@@ -79,7 +80,11 @@ export interface ModelConfig {
   name: string
   provider: string
   description: string
-  costPer1k: number
+  /** USD per MILLION tokens (input/output) — mirrors ModelConfig in '@/lib/models' */
+  costPerMTok: { input: number; output: number; cacheRead?: number; cacheWrite?: number | null }
+  contextWindow?: number
+  inputModalities?: Array<'text' | 'image' | 'video'>
+  thinking?: Array<'adaptive' | 'disabled' | 'always_on'>
 }
 
 // Mission Control Phase 2 Types
@@ -117,6 +122,8 @@ export interface Agent {
   name: string
   role: string
   session_key?: string
+  /** 'claude' opts into per-agent Claude Code session dispatch (#602). */
+  runtime_type?: string | null
   soul_content?: string
   status: 'offline' | 'idle' | 'busy' | 'error'
   last_seen?: number
@@ -536,17 +543,9 @@ export const useMissionControl = create<MissionControlStore>()(
         .reduce((acc, usage) => acc + usage.cost, 0)
     },
 
-    // Model Configuration
-    availableModels: [
-      { alias: 'haiku', name: 'anthropic/claude-3-5-haiku-latest', provider: 'anthropic', description: 'Ultra-cheap, simple tasks', costPer1k: 0.25 },
-      { alias: 'sonnet', name: 'anthropic/claude-sonnet-4-20250514', provider: 'anthropic', description: 'Standard workhorse', costPer1k: 3.0 },
-      { alias: 'opus', name: 'anthropic/claude-opus-4-5', provider: 'anthropic', description: 'Premium quality', costPer1k: 15.0 },
-      { alias: 'deepseek', name: 'ollama/deepseek-r1:14b', provider: 'ollama', description: 'Local reasoning (free)', costPer1k: 0.0 },
-      { alias: 'groq-fast', name: 'groq/llama-3.1-8b-instant', provider: 'groq', description: '840 tok/s, ultra fast', costPer1k: 0.05 },
-      { alias: 'groq', name: 'groq/llama-3.3-70b-versatile', provider: 'groq', description: 'Fast + quality balance', costPer1k: 0.59 },
-      { alias: 'kimi', name: 'moonshot/kimi-k2.5', provider: 'moonshot', description: 'Alternative provider', costPer1k: 1.0 },
-      { alias: 'minimax', name: 'minimax/minimax-m2.1', provider: 'minimax', description: 'Cost-effective (1/10th price), strong coding', costPer1k: 0.3 },
-    ],
+    // Model Configuration — sourced from the shared catalog (single source of
+    // truth) instead of a second stale inline copy.
+    availableModels: [...MODEL_CATALOG],
     setAvailableModels: (models) => set({ availableModels: models }),
 
     // Auth

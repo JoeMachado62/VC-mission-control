@@ -7,10 +7,12 @@ import { logger } from '@/lib/logger';
 import { validateBody, updateTaskSchema } from '@/lib/validation';
 import { resolveMentionRecipients } from '@/lib/mentions';
 import { normalizeTaskUpdateStatus } from '@/lib/task-status';
+import { reconcileDeferredTaskCompletions } from '@/lib/task-dispatch';
 import { syncTaskOutbound } from '@/lib/github-sync-engine';
 import { removeTaskFromGnap } from '@/lib/gnap-sync';
 import { config } from '@/lib/config';
 import type { TaskObservabilityPreview, TraceHealth } from '@/lib/langfuse/types';
+import { requireAgentTaskAccess, requireWorkspaceId } from '@/lib/enforcement/workspace-scope';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
@@ -73,10 +75,18 @@ export async function GET(
     const db = getDatabase();
     const resolvedParams = await params;
     const taskId = parseInt(resolvedParams.id);
-    const workspaceId = auth.user.workspace_id ?? 1;
+    const wsResult = requireWorkspaceId(auth.user);
+    if (!('workspaceId' in wsResult)) return wsResult.response;
+    const { workspaceId } = wsResult;
 
     if (isNaN(taskId)) {
       return NextResponse.json({ error: 'Invalid task ID' }, { status: 400 });
+    }
+
+    try {
+      await reconcileDeferredTaskCompletions({ workspaceId, taskId, limit: 1 })
+    } catch (err) {
+      logger.warn({ err, taskId }, 'Deferred task reconciliation failed during task read')
     }
     
     const stmt = db.prepare(`
@@ -96,10 +106,13 @@ export async function GET(
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-    
+
+    const taskDeny = requireAgentTaskAccess(auth.user, (task as Task).assigned_to ?? null);
+    if (taskDeny) return taskDeny;
+
     // Parse JSON fields
     const taskWithParsedData = mapTaskRow(task);
-    
+
     return NextResponse.json({ task: taskWithParsedData });
   } catch (error) {
     logger.error({ err: error }, 'GET /api/tasks/[id] error');
@@ -124,7 +137,9 @@ export async function PUT(
     const db = getDatabase();
     const resolvedParams = await params;
     const taskId = parseInt(resolvedParams.id);
-    const workspaceId = auth.user.workspace_id ?? 1;
+    const wsResult = requireWorkspaceId(auth.user);
+    if (!('workspaceId' in wsResult)) return wsResult.response;
+    const { workspaceId } = wsResult;
     const validated = await validateBody(request, updateTaskSchema);
     if ('error' in validated) return validated.error;
     const body = validated.data;
@@ -141,7 +156,10 @@ export async function PUT(
     if (!currentTask) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-    
+
+    const taskDeny = requireAgentTaskAccess(auth.user, currentTask.assigned_to ?? null);
+    if (taskDeny) return taskDeny;
+
     const {
       title,
       description,
@@ -429,7 +447,7 @@ export async function PUT(
     }
 
     // Broadcast to SSE clients
-    eventBus.broadcast('task.updated', parsedTask);
+    eventBus.broadcast('task.updated', { ...parsedTask, workspace_id: workspaceId });
 
     return NextResponse.json({ task: parsedTask });
   } catch (error) {
@@ -455,7 +473,9 @@ export async function DELETE(
     const db = getDatabase();
     const resolvedParams = await params;
     const taskId = parseInt(resolvedParams.id);
-    const workspaceId = auth.user.workspace_id ?? 1;
+    const wsResult = requireWorkspaceId(auth.user);
+    if (!('workspaceId' in wsResult)) return wsResult.response;
+    const { workspaceId } = wsResult;
     
     if (isNaN(taskId)) {
       return NextResponse.json({ error: 'Invalid task ID' }, { status: 400 });
@@ -469,7 +489,10 @@ export async function DELETE(
     if (!task) {
       return NextResponse.json({ error: 'Task not found' }, { status: 404 });
     }
-    
+
+    const taskDeny = requireAgentTaskAccess(auth.user, (task as Task).assigned_to ?? null);
+    if (taskDeny) return taskDeny;
+
     // Delete task (cascades will handle comments)
     const stmt = db.prepare('DELETE FROM tasks WHERE id = ? AND workspace_id = ?');
     stmt.run(taskId, workspaceId);
@@ -496,7 +519,7 @@ export async function DELETE(
     }
 
     // Broadcast to SSE clients
-    eventBus.broadcast('task.deleted', { id: taskId, title: task.title });
+    eventBus.broadcast('task.deleted', { id: taskId, title: task.title, workspace_id: workspaceId });
 
     return NextResponse.json({ success: true });
   } catch (error) {

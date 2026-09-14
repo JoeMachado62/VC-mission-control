@@ -6,7 +6,16 @@ import { config } from './config'
 import { runCommand, runOpenClaw } from './command'
 import { scanForInjection } from './injection-guard'
 import { isHermesInstalled, isHermesGatewayRunning, clearHermesDetectionCache } from './hermes-sessions'
+import { isOpenCodeInstalled, getOpenCodeVersion, scanOpenCodeSessions } from './opencode-sessions'
 import { logger } from './logger'
+import {
+  isValidInstallerSha256,
+  resolvePinnedUserToolSpec,
+  runtimeInstallsEnabled,
+  verifyInstallerSha256,
+} from './runtime-install-security'
+
+export { runtimeInstallsEnabled } from './runtime-install-security'
 
 // ---------------------------------------------------------------------------
 // Security review for downloaded installer scripts
@@ -31,9 +40,15 @@ const OPENCLAW_INSTALLER_URLS = [
  */
 async function downloadAndReviewScript(
   url: string,
+  expectedSha256: string,
   job: InstallJob,
   env: NodeJS.ProcessEnv,
 ): Promise<{ scriptPath: string; tempDir: string } | null> {
+  if (!isValidInstallerSha256(expectedSha256)) {
+    job.output += '> SECURITY: Installer blocked because no valid SHA-256 digest is configured.\n'
+    return null
+  }
+
   // 1. Download to unpredictable temp dir (prevents symlink race)
   const tempDir = mkdtempSync(join(tmpdir(), 'mc-install-'))
   const scriptPath = join(tempDir, 'install.sh')
@@ -59,9 +74,11 @@ async function downloadAndReviewScript(
   }
 
   // 2. Read and scan with injection guard (regex baseline)
+  let installerBytes: Buffer
   let content: string
   try {
-    content = readFileSync(scriptPath, 'utf-8')
+    installerBytes = readFileSync(scriptPath)
+    content = installerBytes.toString('utf8')
   } catch {
     job.output += '> Failed to read downloaded script\n'
     rmSync(tempDir, { recursive: true, force: true })
@@ -73,6 +90,14 @@ async function downloadAndReviewScript(
     rmSync(tempDir, { recursive: true, force: true })
     return null
   }
+
+  const digest = verifyInstallerSha256(installerBytes, expectedSha256)
+  if (!digest.valid) {
+    job.output += `> SECURITY: Installer SHA-256 mismatch (received ${digest.actualSha256}).\n`
+    rmSync(tempDir, { recursive: true, force: true })
+    return null
+  }
+  job.output += `> Verified installer SHA-256: ${digest.actualSha256}\n`
 
   const regexReport = scanForInjection(content, { context: 'shell' })
   if (!regexReport.safe) {
@@ -153,17 +178,23 @@ ${truncated}
     const data = await res.json() as { content: Array<{ type: string; text?: string }> }
     const text = data.content?.find(b => b.type === 'text')?.text?.trim() || ''
 
-    if (text.startsWith('UNSAFE:')) {
-      return { safe: false, detail: text }
-    }
-    return { safe: true, detail: text }
+    const verdict = parseScriptReviewVerdict(text)
+    if (!verdict) logger.warn('AI script review returned an inconclusive verdict — skipping')
+    return verdict
   } catch (err: any) {
     logger.warn({ err: err.message }, 'AI script review error — skipping')
     return null
   }
 }
 
-export type RuntimeId = 'openclaw' | 'hermes' | 'claude' | 'codex'
+export function parseScriptReviewVerdict(text: string): ScriptReviewResult | null {
+  const verdict = text.trim()
+  if (verdict.startsWith('UNSAFE:')) return { safe: false, detail: verdict }
+  if (verdict.startsWith('SAFE:')) return { safe: true, detail: verdict }
+  return null
+}
+
+export type RuntimeId = 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode'
 export type DeploymentMode = 'local' | 'docker'
 
 export interface RuntimeStatus {
@@ -221,10 +252,117 @@ const RUNTIME_META: Record<RuntimeId, RuntimeMeta> = {
     authRequired: true,
     authHint: 'Run "codex auth" after install to authenticate.',
   },
+  opencode: {
+    name: 'OpenCode',
+    description: 'AI coding agent for the terminal with local SQLite-backed session storage.',
+    authRequired: false,
+    authHint: '',
+  },
 }
 
 export function getRuntimeMeta(id: RuntimeId): RuntimeMeta | undefined {
   return RUNTIME_META[id]
+}
+
+/**
+ * Declared capability depth per runtime adapter (#900, manifests slice).
+ *
+ * These are properties of the adapter integration code in this repository —
+ * declared per adapter version, never probed from the host. Detection
+ * (installed/running/authenticated) answers "is it here"; a manifest answers
+ * "what can Mission Control honestly do through it". Every `true` must cite a
+ * shipping code path; when in doubt, declare `false` — the whole point of the
+ * matrix is that missing depth is visible instead of implied.
+ */
+export interface RuntimeCapabilities {
+  /** MC can dispatch tasks through this adapter. */
+  dispatch: boolean
+  /** Dispatch can resume/fork a persistent per-agent session. */
+  session_resume: boolean
+  /** PTY attachment to live runtime sessions. */
+  pty: boolean
+  /** Per-dispatch working-directory control. */
+  workspace_cwd: boolean
+  /** Per-dispatch tool allowlist enforcement. */
+  tool_policy: boolean
+  /** Per-dispatch execution budget caps. */
+  budget_cap: boolean
+  /** Machine-readable dispatch output (not prose scraping). */
+  structured_output: boolean
+  /** Adapter reports the runtime's canonical skills inventory. */
+  skills_inventory: boolean
+  receipts: {
+    diff: boolean
+    tests: boolean
+    artifact: boolean
+    browser: boolean
+    /** Token/cost telemetry captured from dispatched runs. */
+    telemetry: boolean
+  }
+}
+
+const NO_RECEIPTS = { diff: false, tests: false, artifact: false, browser: false, telemetry: false }
+
+export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
+  openclaw: {
+    dispatch: true, // gateway `agent` invoke + chat.send (task-dispatch.ts)
+    session_resume: true, // tasks.metadata.target_session routes to a live gateway session
+    pty: true, // PTY setup route attaches to gateway sessions
+    workspace_cwd: false,
+    tool_policy: false,
+    budget_cap: false,
+    structured_output: false,
+    skills_inventory: false, // MC scans file roots itself; the gateway does not report canonical inventory
+    receipts: { ...NO_RECEIPTS, telemetry: true }, // gateway session token stats
+  },
+  hermes: {
+    dispatch: false, // no dispatcher branch; runtime_type: 'hermes' provisions profiles only
+    session_resume: false,
+    pty: false,
+    workspace_cwd: false,
+    tool_policy: false,
+    budget_cap: false,
+    structured_output: false,
+    skills_inventory: false, // pending upstream hermes-agent#71274 (`skills list --json`)
+    receipts: { ...NO_RECEIPTS },
+  },
+  claude: {
+    dispatch: true, // callClaudeViaCli
+    session_resume: true, // #602: per-agent base session, resume/fork per task
+    pty: false,
+    workspace_cwd: true, // #720 sandbox cwd
+    tool_policy: true, // #720 --allowedTools
+    budget_cap: true, // #720 --max-budget-usd
+    structured_output: true, // --output-format json
+    skills_inventory: false,
+    receipts: { ...NO_RECEIPTS, telemetry: true }, // usage tokens recorded per dispatch
+  },
+  codex: {
+    dispatch: true, // callCodexViaCli
+    session_resume: false,
+    pty: false,
+    workspace_cwd: false,
+    tool_policy: false,
+    budget_cap: false,
+    structured_output: false,
+    skills_inventory: false,
+    receipts: { ...NO_RECEIPTS },
+  },
+  opencode: {
+    dispatch: false, // read-only session scanner; no dispatch path
+    session_resume: false,
+    pty: false,
+    workspace_cwd: false,
+    tool_policy: false,
+    budget_cap: false,
+    structured_output: false,
+    skills_inventory: false,
+    receipts: { ...NO_RECEIPTS },
+  },
+}
+
+export function getRuntimeCapabilities(id: RuntimeId): RuntimeCapabilities {
+  return RUNTIME_CAPABILITIES[id]
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +414,7 @@ function detectOpenClaw(): RuntimeStatus {
     const net = require('node:net')
     const socket = new net.Socket()
     socket.setTimeout(500)
-    const connected = new Promise<boolean>((resolve) => {
+    new Promise<boolean>((resolve) => {
       socket.once('connect', () => { socket.destroy(); resolve(true) })
       socket.once('error', () => { socket.destroy(); resolve(false) })
       socket.once('timeout', () => { socket.destroy(); resolve(false) })
@@ -469,19 +607,56 @@ function detectCodex(): RuntimeStatus {
   return { id: 'codex', ...meta, installed, version, running: false, authenticated }
 }
 
+function detectOpenCode(): RuntimeStatus {
+  const meta = RUNTIME_META.opencode
+  const installed = isOpenCodeInstalled()
+  const version = installed ? getOpenCodeVersion() : null
+  const running = installed ? scanOpenCodeSessions(10).some((session) => session.isActive) : false
+
+  return { id: 'opencode', ...meta, installed, version, running, authenticated: installed }
+}
+
 const DETECTORS: Record<RuntimeId, () => RuntimeStatus> = {
   openclaw: detectOpenClaw,
   hermes: detectHermes,
   claude: detectClaude,
   codex: detectCodex,
+  opencode: detectOpenCode,
+}
+
+/**
+ * MC_DISABLE_RUNTIME_SCAN=1 skips executing local binaries for version and
+ * auth probes. Use it for demo instances, screenshots, and CI, or wherever
+ * the dashboard should not read tool versions off the host machine.
+ */
+function runtimeScanDisabled(): boolean {
+  const raw = (process.env.MC_DISABLE_RUNTIME_SCAN || '').trim().toLowerCase()
+  return raw === '1' || raw === 'true' || raw === 'yes'
+}
+
+function undetectedStub(id: RuntimeId): RuntimeStatus {
+  const meta = RUNTIME_META[id]
+  return {
+    id,
+    name: meta?.name || id,
+    description: meta?.description || '',
+    installed: false,
+    version: null,
+    running: false,
+    authRequired: meta?.authRequired ?? false,
+    authHint: meta?.authHint || '',
+    authenticated: false,
+  }
 }
 
 export function detectRuntime(id: RuntimeId): RuntimeStatus {
+  if (runtimeScanDisabled()) return undetectedStub(id)
   const detector = DETECTORS[id]
   return detector ? detector() : { id, name: id, description: '', installed: false, version: null, running: false, authRequired: false, authHint: '', authenticated: false }
 }
 
 export function detectAllRuntimes(): RuntimeStatus[] {
+  if (runtimeScanDisabled()) return (Object.keys(DETECTORS) as RuntimeId[]).map(undetectedStub)
   return Object.values(DETECTORS).map(fn => fn())
 }
 
@@ -519,6 +694,7 @@ export function startInstall(runtime: RuntimeId, mode: DeploymentMode): InstallJ
     hermes: installHermesLocal,
     claude: installClaudeLocal,
     codex: installCodexLocal,
+    opencode: installOpenCodeLocal,
   }
   const installFn = INSTALL_FNS[runtime] || installOpenClawLocal
   installFn(job).catch((err) => {
@@ -583,10 +759,13 @@ async function installOpenClawLocal(job: InstallJob): Promise<void> {
     CI: '1',
   }
   try {
+    // Download, review, then execute from secure temp dir. Every source must
+    // match the same operator-pinned SHA-256, so a fallback URL cannot loosen
+    // the supply-chain check; it only covers a mirror being unavailable.
+    const expectedSha256 = process.env.MC_OPENCLAW_INSTALLER_SHA256 || ''
     let reviewed: { scriptPath: string; tempDir: string } | null = null
     for (const installerUrl of OPENCLAW_INSTALLER_URLS) {
-      // Download, review, then execute from secure temp dir
-      reviewed = await downloadAndReviewScript(installerUrl, job, env)
+      reviewed = await downloadAndReviewScript(installerUrl, expectedSha256, job, env)
       if (reviewed) break
       job.output += `> Installer unavailable at ${installerUrl}; trying next source if available.\n`
     }
@@ -597,12 +776,15 @@ async function installOpenClawLocal(job: InstallJob): Promise<void> {
       return
     }
 
-    const result = await runCommand('bash', [reviewed.scriptPath, '--non-interactive'], {
-      timeoutMs: 300_000, env,
-      onData: (chunk) => { job.output += chunk },
-    })
-
-    rmSync(reviewed.tempDir, { recursive: true, force: true })
+    let result
+    try {
+      result = await runCommand('bash', [reviewed.scriptPath, '--non-interactive'], {
+        timeoutMs: 300_000, env,
+        onData: (chunk) => { job.output += chunk },
+      })
+    } finally {
+      rmSync(reviewed.tempDir, { recursive: true, force: true })
+    }
 
     // Verify the binary actually exists after install
     const { installed: verified } = detectBinary([config.openclawBin || 'openclaw'])
@@ -649,7 +831,12 @@ async function installHermesLocal(job: InstallJob): Promise<void> {
     const hermesUrl = 'https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh'
 
     // Download, review, then execute from secure temp dir
-    const reviewed = await downloadAndReviewScript(hermesUrl, job, env)
+    const reviewed = await downloadAndReviewScript(
+      hermesUrl,
+      process.env.MC_HERMES_INSTALLER_SHA256 || '',
+      job,
+      env,
+    )
     if (!reviewed) {
       job.status = 'failed'
       job.error = 'Installer download or security review failed'
@@ -660,12 +847,15 @@ async function installHermesLocal(job: InstallJob): Promise<void> {
     // Patch /dev/tty check for non-TTY environments before running
     await runCommand('sed', ['-i.bak', 's/\\[ -e \\/dev\\/tty \\]/false/g', reviewed.scriptPath], { timeoutMs: 5_000 }).catch(() => {})
 
-    const result = await runCommand('bash', [reviewed.scriptPath, '--skip-setup'], {
-      timeoutMs: 600_000, env,
-      onData: (chunk) => { job.output += chunk },
-    })
-
-    rmSync(reviewed.tempDir, { recursive: true, force: true })
+    let result
+    try {
+      result = await runCommand('bash', [reviewed.scriptPath, '--skip-setup'], {
+        timeoutMs: 600_000, env,
+        onData: (chunk) => { job.output += chunk },
+      })
+    } finally {
+      rmSync(reviewed.tempDir, { recursive: true, force: true })
+    }
 
     // Verify install actually worked — check for the binary
     clearHermesDetectionCache()
@@ -696,7 +886,12 @@ async function installHermesLocal(job: InstallJob): Promise<void> {
 
 async function installClaudeLocal(job: InstallJob): Promise<void> {
   job.output += '> Installing Claude Code...\n'
-  if (await runInstallCmd('npm', ['install', '-g', '@anthropic-ai/claude-code'], job)) {
+  const resolved = resolvePinnedUserToolSpec('claude')
+  if ('error' in resolved) {
+    job.status = 'failed'
+    job.error = resolved.error
+    job.output += `> SECURITY: ${resolved.error}\n`
+  } else if (await runInstallCmd('npm', ['install', '-g', resolved.spec], job)) {
     job.status = 'success'
     job.output += '\n> Claude Code installed successfully.\n'
     job.output += '> Run "claude login" to authenticate.\n'
@@ -709,13 +904,30 @@ async function installClaudeLocal(job: InstallJob): Promise<void> {
 
 async function installCodexLocal(job: InstallJob): Promise<void> {
   job.output += '> Installing Codex CLI...\n'
-  if (await runInstallCmd('npm', ['install', '-g', '@openai/codex'], job)) {
+  const resolved = resolvePinnedUserToolSpec('codex')
+  if ('error' in resolved) {
+    job.status = 'failed'
+    job.error = resolved.error
+    job.output += `> SECURITY: ${resolved.error}\n`
+  } else if (await runInstallCmd('npm', ['install', '-g', resolved.spec], job)) {
     job.status = 'success'
     job.output += '\n> Codex CLI installed successfully.\n'
     job.output += '> Run "codex auth" to authenticate.\n'
   } else {
     job.status = 'failed'
     job.error = 'npm install failed — see output above'
+  }
+  job.finishedAt = Date.now()
+}
+
+async function installOpenCodeLocal(job: InstallJob): Promise<void> {
+  job.output += '> Installing OpenCode...\n'
+  if (await runInstallCmd('brew', ['install', 'opencode'], job)) {
+    job.status = 'success'
+    job.output += '\n> OpenCode installed successfully.\n'
+  } else {
+    job.status = 'failed'
+    job.error = 'brew install failed — see output above'
   }
   job.finishedAt = Date.now()
 }
@@ -749,6 +961,12 @@ export function generateDockerSidecar(runtime: RuntimeId): string {
 
 # Add to volumes section:
 #   openclaw-data:`
+  }
+
+  if (runtime === 'opencode') {
+    return `# OpenCode does not provide an official sidecar template yet.
+# Install it locally with Homebrew or your preferred package manager,
+# then let Mission Control discover sessions from ~/.local/share/opencode.`
   }
 
   return `  # Hermes Agent sidecar

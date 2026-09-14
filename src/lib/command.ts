@@ -1,5 +1,6 @@
 import { loadGatewayEnv, mergeGatewayEnv } from '@/lib/gateway-env'
 import { spawn } from 'node:child_process'
+import path from 'node:path'
 import { config } from './config'
 
 interface CommandOptions {
@@ -22,7 +23,9 @@ export function runCommand(
   options: CommandOptions = {}
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const spawnCommand = path.extname(command).toLowerCase() === '.mjs' ? process.execPath : command
+    const spawnArgs = spawnCommand === process.execPath ? [command, ...args] : args
+    const child = spawn(spawnCommand, spawnArgs, {
       cwd: options.cwd,
       env: options.env,
       shell: false
@@ -54,6 +57,23 @@ export function runCommand(
 
     child.on('error', (error) => {
       if (timeoutId) clearTimeout(timeoutId)
+
+      const enoent = error as NodeJS.ErrnoException
+      if (enoent?.code === 'ENOENT') {
+        const binHint =
+          command === config.openclawBin
+            ? 'OPENCLAW_BIN'
+            : command === config.clawdbotBin
+              ? 'CLAWDBOT_BIN'
+              : `${command.toUpperCase()}_BIN`
+        const friendly = new Error(
+          `Command not found: ${command}. Install it and ensure it is on PATH, or set ${binHint} to an absolute executable path.`
+        )
+        ;(friendly as any).code = enoent.code
+        reject(friendly)
+        return
+      }
+
       reject(error)
     })
 
@@ -66,7 +86,7 @@ export function runCommand(
       const label = `${command} ${args.join(' ')}`
       const error = new Error(
         timedOut
-          ? `Command timed out after ${options.timeoutMs}ms (${label})`
+          ? `Command timed out after ${options.timeoutMs}ms (${label}): ${stderr || stdout}`
           : `Command failed (${label}): ${stderr || stdout}`
       )
       ;(error as any).stdout = stdout

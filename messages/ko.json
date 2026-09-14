@@ -111,7 +111,8 @@
     },
     "collapseSidebar": "사이드바 접기",
     "expandSidebar": "사이드바 펼치기",
-    "more": "더 보기"
+    "more": "더 보기",
+    "logout": "로그아웃"
   },
   "settings": {
     "language": "언어",
@@ -747,13 +748,17 @@
     "spawnSubAgent": "서브 에이전트 생성",
     "newTask": "새 작업",
     "refresh": "새로 고침",
+    "loadingTasks": "작업을 불러오는 중...",
     "spawnAgentPlaceholder": "에이전트 이름",
     "spawnTaskPlaceholder": "작업 설명",
+    "spawnLabelPlaceholder": "작업 레이블",
     "timeoutTitle": "타임아웃 (분)",
+    "timeoutSeconds": "시간 제한 (초)",
     "spawning": "생성 중...",
     "spawn": "생성",
     "noActiveSpawnRequests": "활성 생성 요청 없음",
     "dismissError": "오류 닫기",
+    "taskBoard": "작업 보드",
     "taskBoardAriaLabel": "작업 보드",
     "columnAriaLabel": "{title} 열, {count}개 작업",
     "colBacklog": "백로그",
@@ -855,6 +860,7 @@
     "today": "오늘",
     "next": "다음",
     "calMode_agenda": "일정",
+    "calMode_day": "일",
     "calMode_week": "주",
     "calMode_month": "월",
     "searchPlaceholder": "작업 검색...",
@@ -1160,7 +1166,15 @@
     "decommissionQueuedDryRun": "{slug}에 대한 드라이런 해제가 큐에 추가되었습니다",
     "decommissionQueued": "{slug}에 대한 해제가 큐에 추가되었습니다",
     "optionalReason": "{action}에 대한 선택적 이유:",
-    "jobActioned": "작업 #{jobId}가 {action}되었습니다"
+    "jobActioned": "작업 #{jobId}가 {action}되었습니다",
+    "workspaceFieldsTitle": "워크스페이스",
+    "workspaceFieldsDesc": "워크스페이스별 브랜드 태그 및 에이전트 메모리 격리 설정.",
+    "workspaceBrandPlaceholder": "브랜드 (선택)",
+    "isolationShared": "공유",
+    "isolationStrict": "엄격",
+    "save": "저장",
+    "saving": "저장 중...",
+    "workspaceFieldsSaved": "워크스페이스 {name} 업데이트됨"
   },
   "auditTrail": {
     "title": "감사 로그",

@@ -84,6 +84,29 @@ function hostMatches(pattern: string, hostname: string): boolean {
   return h === p
 }
 
+/** Normalize a host:port string by stripping default ports (80 for http, 443 for https). */
+function stripDefaultPort(host: string): string {
+  const h = host.toLowerCase()
+  if (h.endsWith(':443')) return h.slice(0, -4)
+  if (h.endsWith(':80')) return h.slice(0, -3)
+  return h
+}
+
+/**
+ * Compare a request host candidate with the Origin host for CSRF validation.
+ * Handles port mismatches caused by reverse proxies (e.g. Origin includes :8443
+ * but the Host header may have been rewritten or stripped by the proxy).
+ */
+function hostsMatchForCsrf(requestHost: string, originHost: string): boolean {
+  const a = normalizeHostname(requestHost)
+  const b = normalizeHostname(originHost)
+  if (!a || !b) return false
+  // Exact match first
+  if (a === b) return true
+  // Match after stripping default ports
+  return stripDefaultPort(a) === stripDefaultPort(b)
+}
+
 function nextResponseWithNonce(request: NextRequest): { response: NextResponse; nonce: string } {
   const nonce = crypto.randomBytes(16).toString('base64')
   const googleEnabled = !!(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID)
@@ -97,6 +120,8 @@ function nextResponseWithNonce(request: NextRequest): { response: NextResponse; 
       headers: requestHeaders,
     },
   })
+  // Debug log retained (commented) for future CSP/nonce flow troubleshooting.
+  // console.log(`[DEBUG csp] proxy generated nonce for ${request.nextUrl.pathname}: ${nonce.slice(0, 8)}...`)
   return { response, nonce }
 }
 
@@ -135,14 +160,18 @@ export function proxy(request: NextRequest) {
   // In production: default-deny unless explicitly allowed.
   // In dev/test: allow all hosts unless overridden.
   const requestHosts = getRequestHostCandidates(request)
-  const allowAnyHost = envFlag('MC_ALLOW_ANY_HOST') || process.env.NODE_ENV !== 'production'
+  const allowAnyHost = envFlag('MC_ALLOW_ANY_HOST')
   const allowedPatterns = String(process.env.MC_ALLOWED_HOSTS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
   const implicitAllowedHosts = getImplicitAllowedHosts()
 
-  const enforceAllowlist = !allowAnyHost && allowedPatterns.length > 0
+  // Production must fail closed: when MC_ALLOW_ANY_HOST is not set,
+  // only implicit local hosts plus any explicit MC_ALLOWED_HOSTS patterns are allowed.
+  // Non-production keeps current looser behavior (allow all unless MC_ALLOWED_HOSTS is set).
+  const isProduction = process.env.NODE_ENV === 'production'
+  const enforceAllowlist = isProduction ? !allowAnyHost : allowedPatterns.length > 0
   const isAllowedHost = !enforceAllowlist
     || requestHosts.some((hostName) =>
       implicitAllowedHosts.some((candidate) => hostMatches(candidate, hostName))
@@ -162,18 +191,17 @@ export function proxy(request: NextRequest) {
     if (origin) {
       let originHost: string
       try { originHost = new URL(origin).host } catch { originHost = '' }
-      const requestHost = request.headers.get('host')?.split(',')[0]?.trim()
-        || request.nextUrl.host
-        || ''
-      if (originHost && requestHost && originHost !== requestHost) {
+      if (originHost && !requestHosts.some((h) => hostsMatchForCsrf(h, originHost))) {
         return addSecurityHeaders(NextResponse.json({ error: 'CSRF origin mismatch' }, { status: 403 }), request)
       }
     }
   }
 
-  // Allow login, setup, auth API, docs, and container health probe without session
+  // Allow login, setup, auth API, docs, and container health probes without session
   const isPublicHealthProbe = pathname === '/api/status' && request.nextUrl.searchParams.get('action') === 'health'
-  if (pathname === '/login' || pathname === '/setup' || pathname.startsWith('/api/auth/') || pathname === '/api/setup' || pathname === '/api/docs' || pathname === '/docs' || isPublicHealthProbe) {
+  // Exact-match only (no prefix/wildcard) so this exempts just the two health routes.
+  const isPublicHealthRoute = pathname === '/api/health' || pathname === '/health'
+  if (pathname === '/login' || pathname === '/setup' || pathname.startsWith('/api/auth/') || pathname === '/api/setup' || pathname === '/api/docs' || pathname === '/docs' || isPublicHealthProbe || isPublicHealthRoute) {
     const { response, nonce } = nextResponseWithNonce(request)
     return addSecurityHeaders(response, request, nonce)
   }
@@ -187,11 +215,13 @@ export function proxy(request: NextRequest) {
     const apiKey = extractApiKeyFromRequest(request)
     const hasValidApiKey = Boolean(configuredApiKey && apiKey && safeCompare(apiKey, configuredApiKey))
 
-    // Agent-scoped keys are validated in route auth (DB-backed) and should be
-    // allowed to pass through proxy auth gate.
-    const looksLikeAgentApiKey = /^mca_[a-f0-9]{48}$/i.test(apiKey)
+    // DB-backed keys (dashboard-rotated `mc_` global keys and `mca_` agent
+    // keys) are validated in route auth — the edge runtime cannot query
+    // SQLite, so the proxy only shape-checks them and lets route auth decide.
+    // Both formats are exactly 48 hex chars after the prefix.
+    const looksLikeDbBackedApiKey = /^mca?_[a-f0-9]{48}$/i.test(apiKey)
 
-    if (sessionToken || hasValidApiKey || looksLikeAgentApiKey) {
+    if (sessionToken || hasValidApiKey || looksLikeDbBackedApiKey) {
       const { response, nonce } = nextResponseWithNonce(request)
       return addSecurityHeaders(response, request, nonce)
     }

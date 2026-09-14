@@ -10,6 +10,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { createPtySession, getPtySession } from './pty-manager'
 import { requireRole } from '@/lib/auth'
 import { logger } from './logger'
+import { denyUnscopedResourceForStrictWorkspace } from './workspace-isolation'
 
 const log = logger.child({ module: 'pty-websocket' })
 
@@ -210,6 +211,17 @@ export function handlePtyUpgrade(req: IncomingMessage, socket: any, head: Buffer
     const message = auth.error || 'Authentication required'
     log.warn({ reason: message, status, minRole }, 'Rejected PTY upgrade: auth failed')
     writeWsHttpError(socket, status, message)
+    return true
+  }
+
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(
+    auth.user,
+    'terminal_sessions',
+    url.pathname,
+  )
+  if (isolationDeny) {
+    log.warn({ status: 403, minRole }, 'Rejected PTY upgrade: workspace isolation denied')
+    writeWsHttpError(socket, 403, 'Terminal sessions are unavailable in this workspace')
     return true
   }
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { useMissionControl } from '@/store'
+import { apiFetch, ApiError } from '@/lib/api-client'
 
 interface OpenClawDoctorStatus {
   level: 'healthy' | 'warning' | 'error'
@@ -36,7 +37,10 @@ export function OpenClawDoctorBanner() {
 
   async function loadDoctorStatus() {
     try {
-      const res = await fetch('/api/openclaw/doctor', { cache: 'no-store' })
+      const res = await apiFetch<Response>('/api/openclaw/doctor', {
+        cache: 'no-store',
+        raw: true,
+      })
       if (!res.ok) {
         setDoctor(null)
         return
@@ -72,16 +76,17 @@ export function OpenClawDoctorBanner() {
     }, 1400)
 
     try {
-      const res = await fetch('/api/openclaw/doctor', { method: 'POST' })
+      const res = await apiFetch<Response>('/api/openclaw/doctor', {
+        method: 'POST',
+        body: JSON.stringify({ confirmation: 'fix_openclaw' }),
+        raw: true,
+      })
       const data = await res.json()
       window.clearInterval(progressTimer)
 
       if (!res.ok) {
         setState('error')
-        setErrorMsg(data.detail || data.error || t('fixFailed'))
-        if (data.status) {
-          setDoctor(data.status)
-        }
+        setErrorMsg(data.error || t('fixFailed'))
         setFixProgress('')
         return
       }
@@ -91,10 +96,14 @@ export function OpenClawDoctorBanner() {
       setFixProgress(progress.map(item => item.detail).filter(Boolean).join(' '))
       setState(data.status?.healthy ? 'success' : 'idle')
       setShowDetails(false)
-    } catch {
+    } catch (error) {
       window.clearInterval(progressTimer)
       setState('error')
-      setErrorMsg(t('networkError'))
+      if (error instanceof ApiError && error.code !== 'NETWORK_ERROR') {
+        setErrorMsg(error.message || t('fixFailed'))
+      } else {
+        setErrorMsg(t('networkError'))
+      }
       setFixProgress('')
     }
   }

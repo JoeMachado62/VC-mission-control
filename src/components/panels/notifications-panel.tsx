@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { apiFetch } from '@/lib/api-client'
 
 interface Notification {
   id: number
@@ -34,9 +35,9 @@ export function NotificationsPanel() {
     try {
       setLoading(true)
       setError(null)
-      const response = await fetch(`/api/notifications?recipient=${encodeURIComponent(recipient)}`)
-      if (!response.ok) throw new Error('Failed to fetch notifications')
-      const data = await response.json()
+      const data = await apiFetch<{ notifications?: Notification[] }>(
+        `/api/notifications?recipient=${encodeURIComponent(recipient)}`,
+      )
       setNotifications(data.notifications || [])
     } catch (err) {
       setError('Failed to fetch notifications')
@@ -57,12 +58,10 @@ export function NotificationsPanel() {
   const markAllRead = async () => {
     if (!recipient) return
     try {
-      const res = await fetch('/api/notifications', {
+      await apiFetch<{ success: boolean; markedAsRead: number }>('/api/notifications', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recipient, markAllRead: true })
       })
-      if (!res.ok) throw new Error('Failed to mark all as read')
       fetchNotifications()
     } catch {
       // Silent — notification state will resync on next poll
@@ -71,12 +70,10 @@ export function NotificationsPanel() {
 
   const markRead = async (id: number) => {
     try {
-      const res = await fetch('/api/notifications', {
+      await apiFetch<{ success: boolean; markedAsRead: number }>('/api/notifications', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [id] })
       })
-      if (!res.ok) throw new Error('Failed to mark as read')
       fetchNotifications()
     } catch {
       // Silent — notification state will resync on next poll
@@ -85,7 +82,7 @@ export function NotificationsPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex justify-between items-center p-4 border-b border-border flex-shrink-0">
+      <div className="flex justify-between items-center p-4 border-b border-border shrink-0">
         <h2 className="text-xl font-bold text-foreground">{t('title')}</h2>
         <Button
           onClick={markAllRead}
@@ -96,12 +93,12 @@ export function NotificationsPanel() {
         </Button>
       </div>
 
-      <div className="p-4 border-b border-border flex-shrink-0">
+      <div className="p-4 border-b border-border shrink-0">
         <label className="block text-sm text-muted-foreground mb-2">{t('recipientLabel')}</label>
         <input
           value={recipient}
           onChange={(e) => setRecipient(e.target.value)}
-          className="w-full bg-surface-1 text-foreground rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+          className="w-full bg-surface-1 text-foreground rounded-md px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
           placeholder={t('recipientPlaceholder')}
         />
       </div>
@@ -143,7 +140,7 @@ export function NotificationsPanel() {
                     onClick={() => markRead(n.id)}
                     variant="link"
                     size="xs"
-                    className="flex-shrink-0 ml-2"
+                    className="shrink-0 ml-2"
                   >
                     {t('markRead')}
                   </Button>

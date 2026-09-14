@@ -3,13 +3,14 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useMissionControl, Conversation } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { apiFetch, ApiError } from '@/lib/api-client'
 import { createClientLogger } from '@/lib/client-logger'
 import { Button } from '@/components/ui/button'
 import { SessionKindAvatar, SessionKindPill } from './session-kind-brand'
 
 const log = createClientLogger('ConversationList')
 
-type SessionKind = 'claude-code' | 'codex-cli' | 'hermes' | 'gateway'
+type SessionKind = 'claude-code' | 'codex-cli' | 'hermes' | 'opencode' | 'gateway'
 
 type SessionRecord = {
   id: string
@@ -126,7 +127,7 @@ interface ConversationListProps {
   onNewConversation: (agentName: string) => void
 }
 
-export function ConversationList({ onNewConversation: _onNewConversation }: ConversationListProps) {
+export function ConversationList({ onNewConversation }: ConversationListProps) {
   const {
     conversations,
     setConversations,
@@ -136,6 +137,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
     sessionAttention,
     setSessionAttention,
     addSplitPane,
+    agents,
   } = useMissionControl()
   const [search, setSearch] = useState('')
   const [initialLoading, setInitialLoading] = useState(conversations.length === 0)
@@ -200,16 +202,18 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
       if (name !== undefined) body.name = name || null
       if (color !== undefined) body.color = color || null
 
-      const res = await fetch('/api/chat/session-prefs', {
+      await apiFetch('/api/chat/session-prefs', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      if (!res.ok) {
-        log.error('Failed to save session pref, server returned', res.status)
-      }
     } catch (err) {
-      log.error('Failed to save session pref:', err)
+      // apiFetch throws on non-OK; preserve the prior graceful degradation
+      // (log only — the optimistic update stays in place).
+      if (err instanceof ApiError) {
+        log.error('Failed to save session pref, server returned', err.status)
+      } else {
+        log.error('Failed to save session pref:', err)
+      }
     }
   }, [conversations, setConversations])
 
@@ -249,15 +253,18 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
 
   const loadConversations = useCallback(async () => {
     try {
-      const sessionsUrl = '/api/sessions'
-      const requests: Promise<Response>[] = [
-        fetch(sessionsUrl),
-        fetch('/api/chat/session-prefs'),
-      ]
-
-      const [sessionsRes, prefsRes] = await Promise.all(requests)
-      const sessionsData = sessionsRes.ok ? readSessions(await sessionsRes.json()) : []
-      const prefs = prefsRes.ok ? readSessionPrefs(await prefsRes.json().catch(() => null)) : {}
+      // apiFetch throws on non-OK / network errors. The originals used
+      // `.ok ? parse : default` for INDEPENDENT graceful degradation, so each
+      // request is caught on its own — a failed prefs fetch must not discard
+      // successfully-loaded sessions (and vice versa).
+      const [sessionsData, prefs] = await Promise.all([
+        apiFetch<unknown>('/api/sessions')
+          .then((payload) => readSessions(payload))
+          .catch(() => [] as SessionRecord[]),
+        apiFetch<unknown>('/api/chat/session-prefs')
+          .then((payload) => readSessionPrefs(payload))
+          .catch(() => ({} as SessionPrefs)),
+      ])
 
       const providerSessions = sessionsData
         .map((s, idx: number) => {
@@ -265,7 +272,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
           const updatedAt = lastActivityMs > 1_000_000_000_000
             ? Math.floor(lastActivityMs / 1000)
             : lastActivityMs
-          const sessionKind: SessionKind = s.kind === 'claude-code' || s.kind === 'codex-cli' || s.kind === 'hermes'
+          const sessionKind: SessionKind = s.kind === 'claude-code' || s.kind === 'codex-cli' || s.kind === 'hermes' || s.kind === 'opencode'
             ? s.kind
             : 'gateway'
           const kindLabel = sessionKind === 'codex-cli'
@@ -274,6 +281,8 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
               ? 'Claude'
               : sessionKind === 'hermes'
                 ? 'Hermes'
+                : sessionKind === 'opencode'
+                  ? 'OpenCode'
                 : 'Gateway'
           const prefKey = `${sessionKind}:${s.id}`
           const pref = prefs[prefKey] || {}
@@ -353,6 +362,44 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
   const allSessions = filteredConversations.filter((c) => c.source === 'session')
   const activeRows = allSessions.filter((c) => c.session?.active)
   const recentRows = allSessions.filter((c) => !c.session?.active)
+  // Direct agent conversations (agent_<name>) are not gateway/local sessions but
+  // must still appear in the list once started (issue #611).
+  const directRows = filteredConversations.filter((c) => c.source !== 'session')
+
+  // Registered agents the user can start a direct conversation with, even when
+  // no live gateway/local sessions exist yet (issue #611). Clicking one opens an
+  // `agent_<name>` conversation (handled by onNewConversation), enabling chat.
+  const agentRows = (agents || []).filter((a) => {
+    if (!a.name) return false
+    if (!search) return true
+    return a.name.toLowerCase().includes(search.toLowerCase())
+  })
+
+  function renderAgentItem(agent: { name: string; status?: string }) {
+    const convId = `agent_${agent.name}`
+    const isSelected = activeConversation === convId
+    const online = agent.status === 'idle' || agent.status === 'busy'
+    return (
+      <button
+        key={`agent:${agent.name}`}
+        type="button"
+        onClick={() => onNewConversation(agent.name)}
+        className={`w-full text-left px-3 py-2 transition-colors group ${
+          isSelected
+            ? 'bg-accent/60 border-l-2 border-primary'
+            : 'border-l-2 border-transparent hover:bg-accent/30'
+        }`}
+      >
+        <div className="flex items-center gap-2.5 w-full">
+          <span
+            className={`h-1.5 w-1.5 rounded-full shrink-0 ${online ? 'bg-green-500' : 'bg-muted-foreground/40'}`}
+          />
+          <span className="text-xs text-foreground truncate">{agent.name}</span>
+          {online && <span className="text-[10px] text-green-400/60 ml-auto">online</span>}
+        </div>
+      </button>
+    )
+  }
 
   function renderConversationItem(conv: Conversation) {
     const displayName = conv.name || conv.id.replace('agent_', '')
@@ -387,7 +434,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
       >
         <div className="flex items-start gap-2.5 w-full">
           {/* Avatar with status ring + attention indicator */}
-          <div className={`relative flex-shrink-0 mt-0.5 ${
+          <div className={`relative shrink-0 mt-0.5 ${
             attentionLevel ? 'ring-2 ring-offset-1 ring-offset-card rounded-full ring-blue-400 animate-pulse' : ''
           }`}>
             <SessionKindAvatar
@@ -423,7 +470,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                     }}
                     onClick={(e) => e.stopPropagation()}
                     maxLength={80}
-                    className="w-full bg-surface-1 rounded px-1 py-0.5 text-xs font-medium text-foreground outline-none ring-1 ring-primary/40"
+                    className="w-full bg-surface-1 rounded px-1 py-0.5 text-xs font-medium text-foreground outline-hidden ring-1 ring-primary/40"
                   />
                 ) : (
                   <span className="text-xs font-medium text-foreground truncate">
@@ -431,7 +478,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
+              <div className="flex items-center gap-1 shrink-0">
                 {conv.unreadCount > 0 && (
                   <span className="bg-blue-500 text-white text-[9px] rounded-full w-4 h-4 flex items-center justify-center font-medium">
                     {conv.unreadCount}
@@ -450,7 +497,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                   <SessionKindPill kind={session.sessionKind} />
                 )}
                 {workDirLeaf && (
-                  <span className="text-[10px] text-muted-foreground/50 font-mono truncate max-w-[8rem]" title={session?.workingDir || ''}>
+                  <span className="text-[10px] text-muted-foreground/50 font-mono truncate max-w-32" title={session?.workingDir || ''}>
                     {workDirLeaf}
                   </span>
                 )}
@@ -482,7 +529,7 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
   return (
     <div className="flex flex-col h-full bg-card">
       {/* Header */}
-      <div className="p-3 border-b border-border flex-shrink-0">
+      <div className="p-3 border-b border-border shrink-0">
         <div className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
       Sessions
         </div>
@@ -496,14 +543,14 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search..."
-            className="w-full bg-surface-1 rounded-md pl-7 pr-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
+            className="w-full bg-surface-1 rounded-md pl-7 pr-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-hidden focus:ring-1 focus:ring-primary/30"
           />
         </div>
       </div>
 
       {/* Conversation list */}
       <div className="flex-1 overflow-y-auto">
-        {filteredConversations.length === 0 ? (
+        {filteredConversations.length === 0 && agentRows.length === 0 ? (
           <div className="p-4 text-center text-xs text-muted-foreground/50">
             {initialLoading ? (
               <div className="flex items-center justify-center gap-2">
@@ -511,11 +558,22 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                 <span>Loading sessions...</span>
               </div>
             ) : (
-              'No sessions found'
+              'No sessions or agents found'
             )}
           </div>
         ) : (
           <>
+            {directRows.length > 0 && (
+              <div>
+                <div className="px-3 pt-2.5 pb-1 flex items-center justify-between">
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground/40">
+                    Conversations
+                    <span className="ml-1 font-mono">{directRows.length}</span>
+                  </span>
+                </div>
+                {directRows.map(renderConversationItem)}
+              </div>
+            )}
             {activeRows.length > 0 && (
               <div>
                 <div className="px-3 pt-2.5 pb-1 flex items-center justify-between">
@@ -537,6 +595,17 @@ export function ConversationList({ onNewConversation: _onNewConversation }: Conv
                   </span>
                 </div>
                 {recentRows.map(renderConversationItem)}
+              </div>
+            )}
+            {agentRows.length > 0 && (
+              <div>
+                <div className="px-3 pt-2.5 pb-1 flex items-center justify-between">
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground/40">
+                    Agents
+                    <span className="ml-1 font-mono">{agentRows.length}</span>
+                  </span>
+                </div>
+                {agentRows.map(renderAgentItem)}
               </div>
             )}
           </>

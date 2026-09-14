@@ -8,6 +8,7 @@ import { logger } from '@/lib/logger'
 import { scanForInjection, sanitizeForPrompt } from '@/lib/injection-guard'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { resolveCoordinatorDeliveryTarget } from '@/lib/coordinator-routing'
+import { getWorkspaceIsolation } from '@/lib/workspace-isolation'
 
 type ForwardInfo = {
   attempted: boolean
@@ -106,6 +107,7 @@ function createChatReply(
     .get(replyInsert.lastInsertRowid, workspaceId) as Message
 
   eventBus.broadcast('chat.message', {
+    workspace_id: workspaceId,
     ...row,
     metadata: safeParseMetadata(row.metadata),
   })
@@ -331,6 +333,11 @@ export async function POST(request: NextRequest) {
   try {
     const db = getDatabase()
     const workspaceId = auth.user.workspace_id ?? 1
+    const isolation = getWorkspaceIsolation(auth.user)
+    if (!isolation) {
+      return NextResponse.json({ error: 'Workspace isolation context is unavailable' }, { status: 403 })
+    }
+    const strictWorkspace = isolation === 'strict'
     const body = await request.json()
 
     const requestedFrom = typeof body.from === 'string' ? body.from.trim() : ''
@@ -416,17 +423,17 @@ export async function POST(request: NextRequest) {
           .prepare('SELECT * FROM agents WHERE lower(name) = lower(?) AND workspace_id = ?')
           .get(to, workspaceId) as any
 
-        const explicitSessionKey = typeof body.sessionKey === 'string' && body.sessionKey
+        const explicitSessionKey = !strictWorkspace && typeof body.sessionKey === 'string' && body.sessionKey
           ? body.sessionKey
           : null
-        const sessions = getAllGatewaySessions()
+        const sessions = strictWorkspace ? [] : getAllGatewaySessions()
         const isCoordinatorSend = String(to).toLowerCase() === COORDINATOR_AGENT.toLowerCase()
         const allAgents = isCoordinatorSend
           ? (db
               .prepare('SELECT name, session_key, config FROM agents WHERE workspace_id = ?')
               .all(workspaceId) as Array<{ name: string; session_key?: string | null; config?: string | null }>)
           : []
-        const configuredCoordinatorTarget = isCoordinatorSend
+        const configuredCoordinatorTarget = !strictWorkspace && isCoordinatorSend
           ? (db
               .prepare("SELECT value FROM settings WHERE key = 'chat.coordinator_target_agent'")
               .get() as { value?: string } | undefined)?.value || null
@@ -452,7 +459,7 @@ export async function POST(request: NextRequest) {
         let sessionKey: string | null = coordinatorResolution.sessionKey
 
         // Fallback: derive session from on-disk gateway session stores
-        if (!sessionKey) {
+        if (!strictWorkspace && !sessionKey) {
           const match = sessions.find(
             (s) =>
               s.agent.toLowerCase() === String(to).toLowerCase() ||
@@ -464,23 +471,37 @@ export async function POST(request: NextRequest) {
 
         // Prefer configured openclawId when present, fallback to normalized name
         let openclawAgentId: string | null = coordinatorResolution.openclawAgentId
+        if (strictWorkspace && !sessionKey) {
+          // A runtime agent ID is deployment-global and does not prove workspace
+          // ownership. Strict workspaces may forward only through a session key
+          // stored on their workspace-owned agent record.
+          openclawAgentId = null
+        }
 
         if (!sessionKey && !openclawAgentId) {
           forwardInfo.reason = 'no_active_session'
 
-          // For coordinator messages, emit an immediate visible status reply
-          if (typeof conversation_id === 'string' && conversation_id.startsWith('coord:')) {
+          // Emit an immediate visible status reply so the user isn't left with
+          // silence when no live session exists — for both coordinator (coord:)
+          // and direct agent (agent_<name>) conversations (issue #611).
+          const isCoordConversation = typeof conversation_id === 'string' && conversation_id.startsWith('coord:')
+          const isAgentConversation = typeof conversation_id === 'string' && conversation_id.startsWith('agent_')
+          if (isCoordConversation || isAgentConversation) {
+            const replyFrom = isCoordConversation ? COORDINATOR_AGENT : String(to)
+            const replyText = isCoordConversation
+              ? 'I received your message, but my live coordinator session is offline right now. Start/restore the coordinator session and retry.'
+              : `Message received, but ${to} has no active gateway session right now. Start or restore the agent's session and retry.`
             try {
-                createChatReply(
-                  db,
-                  workspaceId,
-                  conversation_id,
-                  COORDINATOR_AGENT,
-                  from,
-                  'I received your message, but my live coordinator session is offline right now. Start/restore the coordinator session and retry.',
-                  'status',
-                  { status: 'offline', reason: 'no_active_session' }
-                )
+              createChatReply(
+                db,
+                workspaceId,
+                conversation_id as string,
+                replyFrom,
+                from,
+                replyText,
+                'status',
+                { status: 'offline', reason: 'no_active_session' }
+              )
             } catch (e) {
               logger.error({ err: e }, 'Failed to create offline status reply')
             }
@@ -722,7 +743,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Broadcast to SSE clients
-    eventBus.broadcast('chat.message', parsedMessage)
+    eventBus.broadcast('chat.message', { ...parsedMessage, workspace_id: workspaceId })
 
     return NextResponse.json({ message: parsedMessage, forward: forwardInfo }, { status: 201 })
   } catch (error) {

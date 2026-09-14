@@ -5,6 +5,7 @@ import Image from 'next/image'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { LanguageSwitcherSelect } from '@/components/ui/language-switcher'
+import { apiFetch } from '@/lib/api-client'
 import { STORAGE_GATEWAY_URL } from '@/lib/device-identity'
 
 interface GoogleCredentialResponse {
@@ -67,6 +68,7 @@ const LOOPBACK_GATEWAY_PRESETS = [
   'wss://127.0.0.1:18789',
   'ws://localhost:18789',
   'wss://localhost:18789',
+  'wss://gateway:18789',
 ]
 
 // Deployment-configured gateway URL, inlined by Next at build time.
@@ -103,7 +105,16 @@ export default function LoginPage() {
 
   // Advanced settings state
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [gatewayPreset, setGatewayPreset] = useState<string>(DEFAULT_GATEWAY_URL)
+  const [gatewayPreset, setGatewayPreset] = useState<string>(() => {
+    // A deployment-configured public gateway (NEXT_PUBLIC_GATEWAY_URL) always wins:
+    // from a remote browser 127.0.0.1 is the viewer's machine, not the server.
+    if (HAS_REMOTE_GATEWAY_URL) return DEFAULT_GATEWAY_URL
+    // Auto-select wss:// preset when the page is served over HTTPS (reverse proxy)
+    if (typeof window !== 'undefined' && window.location.protocol === 'https:') {
+      return 'wss://127.0.0.1:18789'
+    }
+    return DEFAULT_GATEWAY_URL
+  })
   const [gatewayCustom, setGatewayCustom] = useState('')
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle')
   const [connectionError, setConnectionError] = useState('')
@@ -193,8 +204,9 @@ export default function LoginPage() {
 
   // Check if first-time setup is needed on page load — auto-redirect to /setup
   useEffect(() => {
-    fetch('/api/setup')
-      .then((res) => res.json())
+    apiFetch<{ needsSetup?: boolean }>('/api/setup', {
+      redirectOnUnauthenticated: false,
+    })
       .then((data) => {
         if (data.needsSetup) {
           window.location.href = '/setup'
@@ -411,7 +423,7 @@ export default function LoginPage() {
                     id="gateway-url"
                     value={gatewayPreset}
                     onChange={e => handleGatewayUrlChange(e.target.value)}
-                    className="flex-1 h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth appearance-none cursor-pointer"
+                    className="flex-1 h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth appearance-none cursor-pointer"
                   >
                     {GATEWAY_URL_PRESETS.map(url => (
                       <option key={url} value={url}>{url}</option>
@@ -425,7 +437,7 @@ export default function LoginPage() {
                     value={gatewayCustom}
                     onChange={e => handleGatewayCustomChange(e.target.value)}
                     placeholder={t('gatewayUrlPlaceholder')}
-                    className="mt-2 w-full h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth"
+                    className="mt-2 w-full h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth"
                   />
                 )}
               </div>
@@ -435,7 +447,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={handleTestConnection}
                   disabled={connectionStatus === 'testing' || !getEffectiveGatewayUrl()}
-                  className="h-9 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm hover:bg-muted-foreground/10 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                  className="h-9 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm hover:bg-muted-foreground/10 focus:outline-hidden focus:ring-2 focus:ring-primary/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                 >
                   {connectionStatus === 'testing' ? (
                     <>
@@ -480,7 +492,7 @@ export default function LoginPage() {
               type="button"
               onClick={handleGoogleSignIn}
               disabled={!googleReady || googleLoading || loading}
-              className="w-full h-10 flex items-center justify-center gap-3 rounded-lg border border-border bg-white text-[#3c4043] text-sm font-medium hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full h-10 flex items-center justify-center gap-3 rounded-lg border border-border bg-white text-[#3c4043] text-sm font-medium hover:bg-gray-50 focus:outline-hidden focus:ring-2 focus:ring-primary/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {googleLoading ? (
                 <>
@@ -515,7 +527,7 @@ export default function LoginPage() {
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth"
+              className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth"
               placeholder={t('enterUsername')}
               autoComplete="username"
               autoFocus
@@ -531,7 +543,7 @@ export default function LoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth"
+              className="w-full h-10 px-3 rounded-lg bg-secondary border border-border text-foreground text-sm placeholder:text-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/50 focus:border-primary transition-smooth"
               placeholder={t('enterPassword')}
               autoComplete="current-password"
               required

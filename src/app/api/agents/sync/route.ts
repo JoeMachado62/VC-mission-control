@@ -3,6 +3,7 @@ import { requireRole } from '@/lib/auth'
 import { syncAgentsFromConfig, previewSyncDiff } from '@/lib/agent-sync'
 import { syncLocalAgents } from '@/lib/local-agent-sync'
 import { logger } from '@/lib/logger'
+import { denyUnscopedResourceForStrictWorkspace } from '@/lib/workspace-isolation'
 
 /**
  * POST /api/agents/sync - Trigger agent config sync
@@ -12,17 +13,19 @@ import { logger } from '@/lib/logger'
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const { searchParams } = new URL(request.url)
   const source = searchParams.get('source')
 
   try {
     if (source === 'local') {
-      const result = await syncLocalAgents()
+      const result = await syncLocalAgents(auth.user.workspace_id)
       return NextResponse.json(result)
     }
 
-    const result = await syncAgentsFromConfig(auth.user.username)
+    const result = await syncAgentsFromConfig(auth.user.username, auth.user.workspace_id)
 
     if (result.error) {
       return NextResponse.json({ error: result.error }, { status: 500 })
@@ -42,9 +45,11 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   try {
-    const diff = await previewSyncDiff()
+    const diff = await previewSyncDiff(auth.user.workspace_id)
     return NextResponse.json(diff)
   } catch (error: any) {
     logger.error({ err: error }, 'GET /api/agents/sync error')

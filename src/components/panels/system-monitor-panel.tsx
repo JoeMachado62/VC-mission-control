@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { apiFetch } from '@/lib/api-client'
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from 'recharts'
 
 interface CpuData {
@@ -106,9 +107,9 @@ export function SystemMonitorPanel() {
     abortRef.current = controller
 
     try {
-      const res = await fetch('/api/system-monitor', { signal: controller.signal })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data: Snapshot = await res.json()
+      const data = await apiFetch<Snapshot>('/api/system-monitor', {
+        signal: controller.signal,
+      })
       setLatest(data)
       setError(null)
 
@@ -153,8 +154,10 @@ export function SystemMonitorPanel() {
         const next = [...prevHistory, point]
         return next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next
       })
-    } catch (err: any) {
-      if (err.name !== 'AbortError') setError(err.message)
+    } catch (err: unknown) {
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : 'Failed to load system metrics')
+      }
     }
   }, [])
 
@@ -193,7 +196,7 @@ export function SystemMonitorPanel() {
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} width={30} tickFormatter={v => `${v}%`} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, background: 'var(--color-card)', border: '1px solid var(--color-border)' }}
-                  formatter={(v: number | undefined) => [`${v ?? 0}%`, 'CPU']}
+                  formatter={(v) => [`${Number(v ?? 0)}%`, 'CPU']}
                 />
                 <Area
                   type="monotone"
@@ -229,7 +232,7 @@ export function SystemMonitorPanel() {
                 <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} width={30} tickFormatter={v => `${v}%`} />
                 <Tooltip
                   contentStyle={{ fontSize: 12, background: 'var(--color-card)', border: '1px solid var(--color-border)' }}
-                  formatter={(v: number | undefined) => [`${v ?? 0}%`, 'Memory']}
+                  formatter={(v) => [`${Number(v ?? 0)}%`, 'Memory']}
                 />
                 <Area
                   type="monotone"
@@ -303,7 +306,7 @@ export function SystemMonitorPanel() {
                       <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} width={30} tickFormatter={v => `${v}%`} />
                       <Tooltip
                         contentStyle={{ fontSize: 12, background: 'var(--color-card)', border: '1px solid var(--color-border)' }}
-                        formatter={(v: number | undefined) => [`${v ?? 0}%`, 'GPU Memory']}
+                        formatter={(v) => [`${Number(v ?? 0)}%`, 'GPU Memory']}
                       />
                       <Area
                         type="monotone"
@@ -393,8 +396,8 @@ export function SystemMonitorPanel() {
                     <YAxis tick={{ fontSize: 10 }} width={50} tickFormatter={v => formatRate(v)} />
                     <Tooltip
                       contentStyle={{ fontSize: 12, background: 'var(--color-card)', border: '1px solid var(--color-border)' }}
-                      formatter={(v: number | undefined, name?: string) => [
-                        formatRate(v ?? 0),
+                      formatter={(v, name) => [
+                        formatRate(Number(v ?? 0)),
                         name === 'netRxRate' ? 'Download' : 'Upload',
                       ]}
                     />

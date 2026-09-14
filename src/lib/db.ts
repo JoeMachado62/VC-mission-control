@@ -190,7 +190,7 @@ export interface Task {
   title: string;
   description?: string;
   status: 'backlog' | 'inbox' | 'assigned' | 'awaiting_owner' | 'in_progress' | 'review' | 'quality_review' | 'done' | 'failed';
-  priority: 'low' | 'medium' | 'high' | 'urgent';
+  priority: 'low' | 'medium' | 'high' | 'critical' | 'urgent';
   project_id?: number;
   project_ticket_no?: number;
   project_name?: string;
@@ -212,6 +212,7 @@ export interface Task {
   completed_at?: number;
   tags?: string; // JSON string
   metadata?: string; // JSON string
+  workspace_id: number;
 }
 
 export interface Agent {
@@ -448,6 +449,7 @@ export const db_helpers = {
     // Broadcast agent status change to SSE clients
     if (agent) {
       eventBus.broadcast('agent.status_changed', {
+        workspace_id: workspaceId,
         id: agent.id,
         name: agentName,
         status,
@@ -463,15 +465,16 @@ export const db_helpers = {
   /**
    * Get recent activities for feed
    */
-  getRecentActivities: (limit: number = 50): Activity[] => {
+  getRecentActivities: (limit: number = 50, workspaceId: number = 1): Activity[] => {
     const db = getDatabase();
     const stmt = db.prepare(`
-      SELECT * FROM activities 
+      SELECT * FROM activities
+      WHERE workspace_id = ?
       ORDER BY created_at DESC 
       LIMIT ?
     `);
     
-    return stmt.all(limit) as Activity[];
+    return stmt.all(workspaceId, limit) as Activity[];
   },
 
   /**
@@ -544,11 +547,16 @@ export function logAuditEvent(event: {
   detail?: any
   ip_address?: string
   user_agent?: string
+  workspace_id?: number
 }) {
   const db = getDatabase()
+  const actorWorkspace = event.actor_id
+    ? db.prepare('SELECT workspace_id FROM users WHERE id = ?').get(event.actor_id) as { workspace_id?: number } | undefined
+    : undefined
+  const workspaceId = event.workspace_id ?? actorWorkspace?.workspace_id ?? 1
   db.prepare(`
-    INSERT INTO audit_log (action, actor, actor_id, target_type, target_id, detail, ip_address, user_agent)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO audit_log (action, actor, actor_id, target_type, target_id, detail, ip_address, user_agent, workspace_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     event.action,
     event.actor,
@@ -558,6 +566,7 @@ export function logAuditEvent(event: {
     event.detail ? JSON.stringify(event.detail) : null,
     event.ip_address ?? null,
     event.user_agent ?? null,
+    workspaceId,
   )
 
   // Broadcast audit events (webhooks listen here too)
@@ -568,6 +577,7 @@ export function logAuditEvent(event: {
       actor: event.actor,
       target_type: event.target_type ?? null,
       target_id: event.target_id ?? null,
+      workspace_id: workspaceId,
       timestamp: Math.floor(Date.now() / 1000),
     })
   }

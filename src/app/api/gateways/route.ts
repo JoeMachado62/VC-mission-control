@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { getDatabase } from '@/lib/db'
 import { getDetectedGatewayPort, getDetectedGatewayToken } from '@/lib/gateway-runtime'
+import { denyUnscopedResourceForStrictWorkspace } from '@/lib/workspace-isolation'
 
 interface GatewayEntry {
   id: number
@@ -45,6 +46,8 @@ function ensureTable(db: ReturnType<typeof getDatabase>) {
 export async function GET(request: NextRequest) {
   const auth = requireRole(request, 'viewer')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const db = getDatabase()
   ensureTable(db)
@@ -63,10 +66,10 @@ export async function GET(request: NextRequest) {
     `).run(name, host, mainPort, mainToken)
 
     const seeded = db.prepare('SELECT * FROM gateways ORDER BY is_primary DESC, name ASC').all() as GatewayEntry[]
-    return NextResponse.json({ gateways: redactTokens(seeded) })
+    return NextResponse.json({ gateways: redactTokens(enrichGatewaysWithAgentCounts(db, seeded, auth.user.workspace_id)) })
   }
 
-  return NextResponse.json({ gateways: redactTokens(gateways) })
+  return NextResponse.json({ gateways: redactTokens(enrichGatewaysWithAgentCounts(db, gateways, auth.user.workspace_id)) })
 }
 
 /**
@@ -75,6 +78,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const db = getDatabase()
   ensureTable(db)
@@ -104,7 +109,7 @@ export async function POST(request: NextRequest) {
       const upsertAgent = db.prepare(`
         INSERT INTO agents (name, role, status, last_seen, source, workspace_id, updated_at)
         VALUES (?, ?, 'idle', ?, 'gateway', ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
+        ON CONFLICT(name, workspace_id) DO UPDATE SET
           status = 'idle',
           last_seen = excluded.last_seen,
           source = 'gateway',
@@ -120,8 +125,8 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      db.prepare('INSERT INTO audit_log (action, actor, detail) VALUES (?, ?, ?)').run(
-        'gateway_added', auth.user?.username || 'system', `Added gateway: ${name} (${host}:${port})${agentsRegistered ? `, registered ${agentsRegistered} agent(s)` : ''}`
+      db.prepare('INSERT INTO audit_log (action, actor, detail, workspace_id) VALUES (?, ?, ?, ?)').run(
+        'gateway_added', auth.user?.username || 'system', `Added gateway: ${name} (${host}:${port})${agentsRegistered ? `, registered ${agentsRegistered} agent(s)` : ''}`, auth.user.workspace_id ?? 1
       )
     } catch { /* audit might not exist */ }
 
@@ -141,6 +146,8 @@ export async function POST(request: NextRequest) {
 export async function PUT(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const db = getDatabase()
   ensureTable(db)
@@ -209,6 +216,8 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const auth = requireRole(request, 'admin')
   if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const isolationDeny = denyUnscopedResourceForStrictWorkspace(auth.user, 'runtime_configuration', new URL(request.url).pathname)
+  if (isolationDeny) return isolationDeny
 
   const db = getDatabase()
   ensureTable(db)
@@ -225,8 +234,8 @@ export async function DELETE(request: NextRequest) {
   const result = db.prepare('DELETE FROM gateways WHERE id = ?').run(id)
 
   try {
-    db.prepare('INSERT INTO audit_log (action, actor, detail) VALUES (?, ?, ?)').run(
-      'gateway_removed', auth.user?.username || 'system', `Removed gateway: ${gw?.name}`
+    db.prepare('INSERT INTO audit_log (action, actor, detail, workspace_id) VALUES (?, ?, ?, ?)').run(
+      'gateway_removed', auth.user?.username || 'system', `Removed gateway: ${gw?.name}`, auth.user.workspace_id ?? 1
     )
   } catch { /* audit might not exist */ }
 
@@ -239,4 +248,26 @@ function redactToken(gw: GatewayEntry): GatewayEntry & { token_set: boolean } {
 
 function redactTokens(gws: GatewayEntry[]) {
   return gws.map(redactToken)
+}
+
+/**
+ * Enrich gateways with live agents_count derived from agents table.
+ * Since there is no agents.gateway_id FK, all gateways share the same count:
+ * the total number of agents with source='gateway' in the workspace.
+ */
+function enrichGatewaysWithAgentCounts(
+  db: ReturnType<typeof getDatabase>,
+  gateways: GatewayEntry[],
+  workspaceId: number
+): GatewayEntry[] {
+  const result = db.prepare(`
+    SELECT COUNT(*) as count FROM agents WHERE source = 'gateway' AND workspace_id = ?
+  `).get(workspaceId) as { count: number } | undefined
+  
+  const gatewayAgentsCount = result?.count ?? 0
+
+  return gateways.map(gw => ({
+    ...gw,
+    agents_count: gatewayAgentsCount
+  }))
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
+import { apiFetch, ApiError } from '@/lib/api-client'
 
 interface AlertRule {
   id: number
@@ -28,6 +29,14 @@ interface EvalResult {
   rule_name: string
   triggered: boolean
   reason?: string
+}
+
+interface AlertRulesData {
+  rules: AlertRule[]
+}
+
+interface AlertEvaluationData {
+  results: EvalResult[]
 }
 
 const ENTITY_FIELDS: Record<string, string[]> = {
@@ -65,8 +74,7 @@ export function AlertRulesPanel() {
 
   const fetchRules = useCallback(async () => {
     try {
-      const res = await fetch('/api/alerts')
-      const data = await res.json()
+      const data = await apiFetch<AlertRulesData>('/api/alerts')
       setRules(data.rules || [])
     } catch { /* ignore */ }
     setLoading(false)
@@ -75,36 +83,38 @@ export function AlertRulesPanel() {
   useEffect(() => { fetchRules() }, [fetchRules])
 
   const toggleRule = async (rule: AlertRule) => {
-    await fetch('/api/alerts', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: rule.id, enabled: rule.enabled ? 0 : 1 }),
-    })
-    fetchRules()
+    try {
+      await apiFetch('/api/alerts', {
+        method: 'PUT',
+        body: JSON.stringify({ id: rule.id, enabled: rule.enabled ? 0 : 1 }),
+      })
+    } catch { /* refresh the authoritative state below */ }
+    finally { fetchRules() }
   }
 
   const deleteRule = async (id: number) => {
-    await fetch('/api/alerts', {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    })
-    fetchRules()
+    try {
+      await apiFetch('/api/alerts', {
+        method: 'DELETE',
+        body: JSON.stringify({ id }),
+      })
+    } catch { /* refresh the authoritative state below */ }
+    finally { fetchRules() }
   }
 
   const evaluateAll = async () => {
     setEvaluating(true)
     try {
-      const res = await fetch('/api/alerts', {
+      const data = await apiFetch<AlertEvaluationData>('/api/alerts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'evaluate' }),
       })
-      const data = await res.json()
       setEvalResults(data.results || [])
     } catch { /* ignore */ }
-    setEvaluating(false)
-    fetchRules() // refresh trigger counts
+    finally {
+      setEvaluating(false)
+      fetchRules() // refresh trigger counts
+    }
   }
 
   const enabledCount = rules.filter(r => r.enabled).length
@@ -299,9 +309,8 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
     setSaving(true)
 
     try {
-      const res = await fetch('/api/alerts', {
+      await apiFetch('/api/alerts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: form.name,
           description: form.description || null,
@@ -314,14 +323,15 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
           action_config: { recipient: form.recipient },
         }),
       })
-      const data = await res.json()
-      if (!res.ok) {
-        setError(data.error || t('failedToCreate'))
-        return
-      }
       onCreated()
-    } catch {
-      setError(t('networkError'))
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.code === 'NETWORK_ERROR'
+          ? t('networkError')
+          : err instanceof Error
+            ? err.message
+            : t('failedToCreate'),
+      )
     } finally {
       setSaving(false)
     }
@@ -339,7 +349,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
             value={form.name}
             onChange={e => setForm({ ...form, name: e.target.value })}
             placeholder={t('ruleNamePlaceholder')}
-            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
             required
           />
         </div>
@@ -350,7 +360,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
             value={form.description}
             onChange={e => setForm({ ...form, description: e.target.value })}
             placeholder={t('optionalDescription')}
-            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
         </div>
       </div>
@@ -361,7 +371,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
           <select
             value={form.entity_type}
             onChange={e => setForm({ ...form, entity_type: e.target.value, condition_field: ENTITY_FIELDS[e.target.value]?.[0] || 'status' })}
-            className="w-full h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
           >
             <option value="agent">{t('entityAgent')}</option>
             <option value="task">{t('entityTask')}</option>
@@ -374,7 +384,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
           <select
             value={form.condition_field}
             onChange={e => setForm({ ...form, condition_field: e.target.value })}
-            className="w-full h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
           >
             {fields.map(f => <option key={f} value={f}>{f}</option>)}
           </select>
@@ -384,7 +394,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
           <select
             value={form.condition_operator}
             onChange={e => setForm({ ...form, condition_operator: e.target.value })}
-            className="w-full h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
           >
             {OPERATORS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
@@ -396,7 +406,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
             value={form.condition_value}
             onChange={e => setForm({ ...form, condition_value: e.target.value })}
             placeholder={t('valuePlaceholder')}
-            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
             required
           />
         </div>
@@ -410,7 +420,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
             value={form.cooldown_minutes}
             onChange={e => setForm({ ...form, cooldown_minutes: parseInt(e.target.value) || 60 })}
             min={1}
-            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
         </div>
         <div>
@@ -420,7 +430,7 @@ function CreateRuleForm({ onCreated, onCancel }: { onCreated: () => void; onCanc
             value={form.recipient}
             onChange={e => setForm({ ...form, recipient: e.target.value })}
             placeholder="system"
-            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            className="w-full h-8 px-2.5 rounded-md bg-secondary border border-border text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
         </div>
       </div>

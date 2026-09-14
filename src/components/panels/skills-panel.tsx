@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { useMissionControl } from '@/store'
 import { Button } from '@/components/ui/button'
+import { apiFetch, ApiError } from '@/lib/api-client'
 
 interface SkillSummary {
   id: string
@@ -46,6 +47,32 @@ interface RegistrySkill {
   source: string
   installCount?: number
   tags?: string[]
+}
+
+interface RegistryResponse {
+  skills?: RegistrySkill[]
+}
+
+interface RegistryInstallResponse {
+  message?: string
+  error?: string
+  securityReport?: { status?: string }
+}
+
+function skillApiPayload<T>(error: unknown): T | null {
+  if (
+    error instanceof ApiError &&
+    error.payload !== null &&
+    typeof error.payload === 'object'
+  ) {
+    return error.payload as T
+  }
+  return null
+}
+
+function skillApiMessage(error: unknown, fallback: string): string {
+  const payload = skillApiPayload<{ error?: string; message?: string }>(error)
+  return payload?.message || payload?.error || (error instanceof Error ? error.message : fallback)
 }
 
 type PanelTab = 'installed' | 'registry'
@@ -118,10 +145,7 @@ export function SkillsPanel() {
   const loadSkills = useCallback(async (opts?: { initial?: boolean }) => {
     if (opts?.initial) setLoading(true)
     setError(null)
-    const res = await fetch('/api/skills', { cache: 'no-store' })
-    const body = await res.json()
-    if (!res.ok) throw new Error(body?.error || 'Failed to load skills')
-    const resp = body as SkillsResponse
+    const resp = await apiFetch<SkillsResponse>('/api/skills', { cache: 'no-store' })
     setSkillsData(resp.skills, resp.groups, resp.total)
     if (opts?.initial) setLoading(false)
   }, [setSkillsData])
@@ -133,9 +157,9 @@ export function SkillsPanel() {
     async function run() {
       try {
         await loadSkills({ initial: true })
-      } catch (err: any) {
+      } catch (err) {
         if (!cancelled) {
-          setError(err?.message || 'Failed to load skills')
+          setError(skillApiMessage(err, 'Failed to load skills'))
           setLoading(false)
         }
       }
@@ -177,12 +201,13 @@ export function SkillsPanel() {
           source: skill.source,
           name: skill.name,
         })
-        const res = await fetch(`/api/skills?${params.toString()}`, { cache: 'no-store' })
-        const body = await res.json()
-        if (!res.ok) throw new Error(body?.error || 'Failed to load SKILL.md')
-        if (!cancelled) setSelectedContent(body as SkillContentResponse)
-      } catch (err: any) {
-        if (!cancelled) setDrawerError(err?.message || 'Failed to load SKILL.md')
+        const body = await apiFetch<SkillContentResponse>(
+          `/api/skills?${params.toString()}`,
+          { cache: 'no-store' },
+        )
+        if (!cancelled) setSelectedContent(body)
+      } catch (err) {
+        if (!cancelled) setDrawerError(skillApiMessage(err, 'Failed to load SKILL.md'))
       } finally {
         if (!cancelled) setDrawerLoading(false)
       }
@@ -208,8 +233,8 @@ export function SkillsPanel() {
     setLoading(true)
     try {
       await loadSkills()
-    } catch (err: any) {
-      setError(err?.message || 'Failed to refresh skills')
+    } catch (err) {
+      setError(skillApiMessage(err, 'Failed to refresh skills'))
     } finally {
       setLoading(false)
     }
@@ -219,21 +244,18 @@ export function SkillsPanel() {
     setCreateError(null)
     setSaving(true)
     try {
-      const res = await fetch('/api/skills', {
+      await apiFetch<Record<string, unknown>>('/api/skills', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source: createSource,
           name: createName.trim(),
           content: createContent,
         }),
       })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body?.error || 'Failed to create skill')
       setCreateName('')
       await loadSkills()
-    } catch (err: any) {
-      setCreateError(err?.message || 'Failed to create skill')
+    } catch (err) {
+      setCreateError(skillApiMessage(err, 'Failed to create skill'))
     } finally {
       setSaving(false)
     }
@@ -244,21 +266,18 @@ export function SkillsPanel() {
     setSaving(true)
     setDrawerError(null)
     try {
-      const res = await fetch('/api/skills', {
+      await apiFetch<Record<string, unknown>>('/api/skills', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source: selectedSkill.source,
           name: selectedSkill.name,
           content: draftContent,
         }),
       })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body?.error || 'Failed to save skill')
       await loadSkills()
       setSelectedContent((prev) => prev ? { ...prev, content: draftContent } : prev)
-    } catch (err: any) {
-      setDrawerError(err?.message || 'Failed to save skill')
+    } catch (err) {
+      setDrawerError(skillApiMessage(err, 'Failed to save skill'))
     } finally {
       setSaving(false)
     }
@@ -271,15 +290,19 @@ export function SkillsPanel() {
     setSaving(true)
     setDrawerError(null)
     try {
-      const params = new URLSearchParams({ source: selectedSkill.source, name: selectedSkill.name })
-      const res = await fetch(`/api/skills?${params.toString()}`, { method: 'DELETE' })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body?.error || 'Failed to delete skill')
+      await apiFetch<Record<string, unknown>>('/api/skills', {
+        method: 'DELETE',
+        body: JSON.stringify({
+          source: selectedSkill.source,
+          name: selectedSkill.name,
+          confirmation: 'delete_skill',
+        }),
+      })
       setSelectedSkill(null)
       setSelectedContent(null)
       await loadSkills()
-    } catch (err: any) {
-      setDrawerError(err?.message || 'Failed to delete skill')
+    } catch (err) {
+      setDrawerError(skillApiMessage(err, 'Failed to delete skill'))
     } finally {
       setSaving(false)
     }
@@ -291,13 +314,14 @@ export function SkillsPanel() {
     setRegistryError(null)
     try {
       const params = new URLSearchParams({ source: registrySource, q: registryQuery.trim() })
-      const res = await fetch(`/api/skills/registry?${params.toString()}`, { cache: 'no-store' })
-      const body = await res.json()
-      if (!res.ok) throw new Error(body?.error || 'Search failed')
+      const body = await apiFetch<RegistryResponse>(
+        `/api/skills/registry?${params.toString()}`,
+        { cache: 'no-store' },
+      )
       setRegistryResults(body?.skills || [])
       setRegistrySearched(true)
-    } catch (err: any) {
-      setRegistryError(err?.message || 'Search failed')
+    } catch (err) {
+      setRegistryError(skillApiMessage(err, 'Search failed'))
     } finally {
       setRegistryLoading(false)
     }
@@ -308,35 +332,39 @@ export function SkillsPanel() {
     setInstalling(slug)
     setInstallMessage(null)
     setInstallModal({ slug, name: displayName, step: 'fetching' })
+    let stepTimer: ReturnType<typeof setTimeout> | undefined
+    let writeTimer: ReturnType<typeof setTimeout> | undefined
     try {
       // Simulate step progression — the API does fetch+scan+write in one call,
       // so we show intermediate steps on a timer for UX feedback
-      const stepTimer = setTimeout(() => {
+      stepTimer = setTimeout(() => {
         setInstallModal(prev => prev?.slug === slug ? { ...prev, step: 'scanning' } : prev)
       }, 800)
-      const writeTimer = setTimeout(() => {
+      writeTimer = setTimeout(() => {
         setInstallModal(prev => prev?.slug === slug ? { ...prev, step: 'writing' } : prev)
       }, 1600)
 
-      const res = await fetch('/api/skills/registry', {
+      const body = await apiFetch<RegistryInstallResponse>('/api/skills/registry', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: registrySource, slug, targetRoot: installTarget }),
       })
-      const body = await res.json()
       clearTimeout(stepTimer)
       clearTimeout(writeTimer)
 
-      if (!res.ok) {
-        const msg = body?.message || body?.error || 'Install failed'
-        setInstallModal({ slug, name: displayName, step: 'error', message: msg, securityStatus: body?.securityReport?.status })
-      } else {
-        setInstallModal({ slug, name: displayName, step: 'done', message: body?.message || 'Installed successfully', securityStatus: body?.securityReport?.status })
-        await loadSkills()
-      }
-    } catch (err: any) {
-      setInstallModal({ slug, name: displayName, step: 'error', message: err?.message || 'Network error' })
+      setInstallModal({ slug, name: displayName, step: 'done', message: body?.message || 'Installed successfully', securityStatus: body?.securityReport?.status })
+      await loadSkills()
+    } catch (err) {
+      const body = skillApiPayload<RegistryInstallResponse>(err)
+      setInstallModal({
+        slug,
+        name: displayName,
+        step: 'error',
+        message: body?.message || body?.error || skillApiMessage(err, 'Network error'),
+        securityStatus: body?.securityReport?.status,
+      })
     } finally {
+      if (stepTimer) clearTimeout(stepTimer)
+      if (writeTimer) clearTimeout(writeTimer)
       setInstalling(null)
     }
   }
@@ -344,9 +372,11 @@ export function SkillsPanel() {
   const checkSecurity = async (skill: SkillSummary) => {
     try {
       const params = new URLSearchParams({ mode: 'check', source: skill.source, name: skill.name })
-      const res = await fetch(`/api/skills?${params.toString()}`, { cache: 'no-store' })
-      const body = await res.json()
-      if (res.ok && body?.security) {
+      const body = await apiFetch<SkillContentResponse>(
+        `/api/skills?${params.toString()}`,
+        { cache: 'no-store' },
+      )
+      if (body?.security) {
         await loadSkills() // refresh to pick up updated security_status
       }
     } catch { /* best-effort */ }
@@ -369,9 +399,11 @@ export function SkillsPanel() {
       setScanAll({ ...state })
       try {
         const params = new URLSearchParams({ mode: 'check', source: skill.source, name: skill.name })
-        const res = await fetch(`/api/skills?${params.toString()}`, { cache: 'no-store' })
-        const body = await res.json()
-        if (res.ok && body?.security) {
+        const body = await apiFetch<SkillContentResponse>(
+          `/api/skills?${params.toString()}`,
+          { cache: 'no-store' },
+        )
+        if (body?.security) {
           const s = body.security.status as string
           if (s === 'clean') state.results.clean++
           else if (s === 'warning') state.results.warning++
@@ -447,7 +479,7 @@ export function SkillsPanel() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t('searchPlaceholder')}
-              className="h-9 w-full rounded-md border border-border bg-secondary/50 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40"
+              className="h-9 w-full rounded-md border border-border bg-secondary/50 pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:border-primary/40"
             />
             {query && (
               <button
@@ -531,7 +563,7 @@ export function SkillsPanel() {
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
                 placeholder="new-skill-name"
-                className="h-9 rounded-md border border-border bg-secondary/50 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                className="h-9 rounded-md border border-border bg-secondary/50 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden"
               />
               <Button variant="default" size="sm" onClick={createSkill} disabled={saving || !createName.trim()}>
                 {t('addSkill')}
@@ -540,7 +572,7 @@ export function SkillsPanel() {
             <textarea
               value={createContent}
               onChange={(e) => setCreateContent(e.target.value)}
-              className="w-full h-24 rounded-md border border-border bg-secondary/30 p-2 text-xs text-foreground font-mono focus:outline-none"
+              className="w-full h-24 rounded-md border border-border bg-secondary/30 p-2 text-xs text-foreground font-mono focus:outline-hidden"
               placeholder={t('initialContent')}
             />
             {createError && <p className="text-xs text-destructive">{createError}</p>}
@@ -652,7 +684,7 @@ export function SkillsPanel() {
                 onChange={(e) => setRegistryQuery(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && searchRegistry()}
                 placeholder={t('registrySearchPlaceholder')}
-                className="h-9 flex-1 rounded-md border border-border bg-secondary/50 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+                className="h-9 flex-1 rounded-md border border-border bg-secondary/50 px-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-hidden"
               />
               <Button variant="default" size="sm" onClick={searchRegistry} disabled={registryLoading || !registryQuery.trim()}>
                 {registryLoading ? t('searching') : t('search')}
@@ -739,8 +771,8 @@ export function SkillsPanel() {
       )}
 
       {isMounted && installModal && createPortal(
-        <div className="fixed inset-0 z-[130]">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+        <div className="fixed inset-0 z-130">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" />
           <div className="absolute inset-0 flex items-center justify-center p-4">
             <div className="w-full max-w-md bg-card border border-border rounded-lg shadow-2xl overflow-hidden">
               <div className="px-5 pt-5 pb-4">
@@ -830,7 +862,7 @@ export function SkillsPanel() {
       )}
 
       {isMounted && selectedSkill && createPortal(
-        <div className="fixed inset-0 z-[120]">
+        <div className="fixed inset-0 z-120">
           <div className="absolute inset-0 bg-black/40" onClick={() => setSelectedSkill(null)} />
           <aside className="absolute right-0 top-0 h-full w-[min(52rem,100vw)] bg-card border-l border-border shadow-2xl flex flex-col">
             <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
@@ -879,7 +911,7 @@ export function SkillsPanel() {
                   <textarea
                     value={draftContent}
                     onChange={(e) => setDraftContent(e.target.value)}
-                    className="w-full h-full min-h-[70vh] bg-card p-4 text-xs text-muted-foreground leading-5 font-mono whitespace-pre rounded-none border-0 focus:outline-none"
+                    className="w-full h-full min-h-[70vh] bg-card p-4 text-xs text-muted-foreground leading-5 font-mono whitespace-pre rounded-none border-0 focus:outline-hidden"
                   />
                 </>
               ) : (

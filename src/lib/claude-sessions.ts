@@ -20,20 +20,35 @@ import { getDatabase } from './db'
 import { logger } from './logger'
 
 // Skip JSONL files larger than this to avoid excessive I/O
-const MAX_SESSION_FILE_BYTES = 50 * 1024 * 1024 // 50 MB
+const DEFAULT_MAX_SESSION_FILE_BYTES = 50 * 1024 * 1024 // 50 MB
+
+function getEnvPositiveInt(key: string, defaultValue: number): number {
+  const raw = process.env[key]
+  if (!raw) return defaultValue
+
+  const value = Number.parseInt(raw, 10)
+  return Number.isFinite(value) && value > 0 ? value : defaultValue
+}
+
+const MAX_SESSION_FILE_BYTES = getEnvPositiveInt('MC_MAX_SESSION_FILE_BYTES', DEFAULT_MAX_SESSION_FILE_BYTES)
 
 // Rough per-token pricing (USD) for cost estimation
+// Per-token prices (USD / token). Source: official Anthropic pricing docs,
+// verified 2026-05. Opus 4.5/4.6 = $5/$25, Sonnet 4.6 = $3/$15,
+// Haiku 4.5 = $1/$5 per MTok.
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  'claude-opus-4-6': { input: 15 / 1_000_000, output: 75 / 1_000_000 },
+  'claude-opus-4-6': { input: 5 / 1_000_000, output: 25 / 1_000_000 },
   'claude-sonnet-4-6': { input: 3 / 1_000_000, output: 15 / 1_000_000 },
-  'claude-haiku-4-5': { input: 0.8 / 1_000_000, output: 4 / 1_000_000 },
+  'claude-haiku-4-5': { input: 1 / 1_000_000, output: 5 / 1_000_000 },
 }
 
 const DEFAULT_PRICING = { input: 3 / 1_000_000, output: 15 / 1_000_000 }
 
-// Session is "active" if last activity was within this window.
-// Local CLI sessions can remain interactive without emitting frequent logs.
-const ACTIVE_THRESHOLD_MS = 90 * 60 * 1000
+// "Active" window. Upstream default was 90 minutes which surfaced too many
+// stale jsonls; 2 minutes was too tight (any pause >2 min in an active host
+// CLI dropped the session out of "active"). 15 minutes covers normal think
+// time between user prompts in a live `claude` session.
+const ACTIVE_THRESHOLD_MS = 15 * 60 * 1000
 const FUTURE_TOLERANCE_MS = 60 * 1000
 
 interface SessionStats {
@@ -82,10 +97,21 @@ function clampTimestamp(ms: number): number {
   return ms
 }
 
+// Track which oversized files we've already warned about to avoid log spam.
+// scanClaudeSessions() runs every 30s; without this each big jsonl prints a
+// WARN every cycle. Reset on process restart.
+const warnedOversized = new Set<string>()
+
 async function parseSessionFile(filePath: string, projectSlug: string, fileMtimeMs: number, fileSizeBytes: number): Promise<SessionStats | null> {
   try {
     if (fileSizeBytes > MAX_SESSION_FILE_BYTES) {
-      logger.warn({ filePath, fileSizeBytes }, 'Skipping oversized Claude session file')
+      if (!warnedOversized.has(filePath)) {
+        warnedOversized.add(filePath)
+        logger.info(
+          { filePath, fileSizeBytes },
+          'Skipping oversized Claude session file (logged once per process)',
+        )
+      }
       return null
     }
 
@@ -312,6 +338,7 @@ export async function syncClaudeSessions(force = false): Promise<{ ok: boolean; 
     `)
 
     let upserted = 0
+    let removed = 0
     db.transaction(() => {
       // Mark all sessions inactive before scanning
       db.prepare('UPDATE claude_sessions SET is_active = 0').run()
@@ -326,11 +353,28 @@ export async function syncClaudeSessions(force = false): Promise<{ ok: boolean; 
         )
         upserted++
       }
+
+      // Delete rows whose jsonl no longer exists on disk. Without this, removed
+      // session files (manual cleanup, project rename, claude --resume that
+      // creates a new id) leave phantom rows that the API still surfaces as
+      // "Active" via the derivedActive mtime fallback.
+      const liveIds = new Set(sessions.map(s => s.sessionId))
+      const allRows = db.prepare('SELECT session_id FROM claude_sessions').all() as Array<{ session_id: string }>
+      const del = db.prepare('DELETE FROM claude_sessions WHERE session_id = ?')
+      for (const row of allRows) {
+        if (!liveIds.has(row.session_id)) {
+          del.run(row.session_id)
+          removed++
+        }
+      }
     })()
 
     const active = sessions.filter(s => s.isActive).length
     lastSyncAt = Date.now()
-    lastSyncResult = { ok: true, message: `Scanned ${upserted} session(s), ${active} active` }
+    lastSyncResult = {
+      ok: true,
+      message: `Scanned ${upserted} session(s), ${active} active${removed ? `, removed ${removed} orphan(s)` : ''}`,
+    }
     return lastSyncResult
   } catch (err: any) {
     logger.error({ err }, 'Claude session sync failed')

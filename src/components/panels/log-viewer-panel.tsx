@@ -4,9 +4,10 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
-import { useMissionControl } from '@/store'
+import { useMissionControl, type LogEntry } from '@/store'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { createClientLogger } from '@/lib/client-logger'
+import { apiFetch } from '@/lib/api-client'
 
 const log = createClientLogger('LogViewer')
 
@@ -76,8 +77,7 @@ export function LogViewerPanel() {
       })
 
       log.debug(`Fetching /api/logs?${params}`)
-      const response = await fetch(`/api/logs?${params}`)
-      const data = await response.json()
+      const data = await apiFetch<{ logs?: LogEntry[] }>(`/api/logs?${params}`)
 
       log.debug(`Received ${data.logs?.length || 0} logs from API`)
 
@@ -113,8 +113,7 @@ export function LogViewerPanel() {
 
   const loadSources = useCallback(async () => {
     try {
-      const response = await fetch('/api/logs?action=sources')
-      const data = await response.json()
+      const data = await apiFetch<{ sources?: string[] }>('/api/logs?action=sources')
       setAvailableSources(data.sources || [])
     } catch (error) {
       log.error('Failed to load log sources:', error)
@@ -124,8 +123,10 @@ export function LogViewerPanel() {
   // Try to fetch log file path from gateway status
   const loadLogFilePath = useCallback(async () => {
     try {
-      const response = await fetch('/api/status')
-      const data = await response.json()
+      const data = await apiFetch<{
+        config?: { logFile?: string }
+        logFile?: string
+      }>('/api/status')
       const path = data?.config?.logFile || data?.logFile || null
       setLogFilePath(path)
     } catch {
@@ -237,7 +238,7 @@ export function LogViewerPanel() {
             <select
               value={logFilters.level || ''}
               onChange={(e) => handleFilterChange({ level: e.target.value || undefined })}
-              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50"
             >
               <option value="">{t('allLevels')}</option>
               <option value="error">{t('levelError')}</option>
@@ -255,7 +256,7 @@ export function LogViewerPanel() {
             <select
               value={logFilters.source || ''}
               onChange={(e) => handleFilterChange({ source: e.target.value || undefined })}
-              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50"
             >
               <option value="">{t('allSources')}</option>
               {availableSources.map((source) => (
@@ -274,7 +275,7 @@ export function LogViewerPanel() {
               value={logFilters.session || ''}
               onChange={(e) => handleFilterChange({ session: e.target.value || undefined })}
               placeholder={t('sessionPlaceholder')}
-              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground placeholder-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground placeholder-muted-foreground text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50"
             />
           </div>
 
@@ -288,7 +289,7 @@ export function LogViewerPanel() {
               value={logFilters.search || ''}
               onChange={(e) => handleFilterChange({ search: e.target.value || undefined })}
               placeholder={t('searchPlaceholder')}
-              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground placeholder-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground placeholder-muted-foreground text-sm focus:outline-hidden focus:ring-2 focus:ring-primary/50"
             />
           </div>
 
@@ -386,7 +387,7 @@ export function LogViewerPanel() {
                         </span>
                       )}
                     </div>
-                    <div className="mt-1 text-foreground break-words">
+                    <div className="mt-1 text-foreground wrap-break-word">
                       {log.message}
                     </div>
                     {log.data && (

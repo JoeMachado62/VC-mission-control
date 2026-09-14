@@ -6,17 +6,18 @@ import { NextIntlClientProvider } from 'next-intl'
 import { getLocale, getMessages } from 'next-intl/server'
 import { THEME_IDS } from '@/lib/themes'
 import { ThemeBackground } from '@/components/ui/theme-background'
+import { AuthExpiredListener } from '@/components/auth-expired-listener'
 import './globals.css'
 
 const inter = Inter({
   subsets: ['latin'],
-  variable: '--font-sans',
+  variable: '--font-inter',
   display: 'swap',
 })
 
 const jetbrainsMono = JetBrains_Mono({
   subsets: ['latin'],
-  variable: '--font-mono',
+  variable: '--font-jetbrains-mono',
   display: 'swap',
 })
 
@@ -92,6 +93,9 @@ export default async function RootLayout({
   const locale = await getLocale()
   const messages = await getMessages()
 
+  // Debug log retained (commented) for future CSP/nonce flow troubleshooting.
+  // console.log('[DEBUG csp] layout nonce from x-nonce header:', nonce ? `${nonce.slice(0, 8)}...` : '(MISSING)')
+
   return (
     <html lang={locale} dir={locale === 'ar' ? 'rtl' : 'ltr'} className="dark" suppressHydrationWarning>
       <head>
@@ -112,8 +116,10 @@ export default async function RootLayout({
             themes={THEME_IDS}
             enableSystem={false}
             disableTransitionOnChange
+            nonce={nonce}
           >
             <ThemeBackground />
+            <AuthExpiredListener />
             <div className="h-screen overflow-hidden bg-background text-foreground">
               {children}
             </div>

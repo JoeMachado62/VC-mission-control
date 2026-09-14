@@ -233,6 +233,102 @@ export const passwordChangeLimiter = createKeyedRateLimiter({
   critical: true,
 })
 
+/** Execution approvals and persistent allowlist edits: 30/min per operator. */
+export const execApprovalLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 30,
+  message: 'Too many execution approval changes. Try again in a minute.',
+  critical: true,
+})
+
+/** Privileged security configuration and filesystem repairs: 5/min per admin. */
+export const securityFixLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 5,
+  message: 'Too many security fix attempts. Try again in a minute.',
+  critical: true,
+})
+
+/** OS account creation and runtime installation: 5 attempts per 10 minutes per admin. */
+export const osUserProvisionLimiter = createKeyedRateLimiter({
+  windowMs: 10 * 60_000,
+  maxRequests: 5,
+  message: 'Too many OS user provisioning attempts. Try again later.',
+  critical: true,
+})
+
+/** Host package installation: 3 attempts per 10 minutes per admin. */
+export const hostPackageInstallLimiter = createKeyedRateLimiter({
+  windowMs: 10 * 60_000,
+  maxRequests: 3,
+  message: 'Too many host package installation attempts. Try again later.',
+  critical: true,
+})
+
+/** Application self-update: 3 attempts per 10 minutes per admin. */
+export const releaseUpdateLimiter = createKeyedRateLimiter({
+  windowMs: 10 * 60_000,
+  maxRequests: 3,
+  message: 'Too many release update attempts. Try again later.',
+  critical: true,
+})
+
+/** OpenClaw runtime updates and repairs: 5 attempts per 10 minutes per admin. */
+export const openClawMaintenanceLimiter = createKeyedRateLimiter({
+  windowMs: 10 * 60_000,
+  maxRequests: 5,
+  message: 'Too many OpenClaw maintenance attempts. Try again later.',
+  critical: true,
+})
+
+/** Gateway process start, stop, restart, and diagnostics: 10 attempts per minute per admin. */
+export const gatewayControlLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 10,
+  message: 'Too many gateway control attempts. Try again in a minute.',
+  critical: true,
+})
+
+/** Gateway configuration writes, applies, and system updates: 20 attempts per minute per admin. */
+export const gatewayConfigMutationLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 20,
+  message: 'Too many gateway configuration changes. Try again in a minute.',
+  critical: true,
+})
+
+/** Runtime hook, credential, identity, OAuth, and setup commands: 20 attempts per minute per admin. */
+export const hermesMutationLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 20,
+  message: 'Too many runtime setup changes. Try again in a minute.',
+  critical: true,
+})
+
+/** Deployment backup creation and deletion: 10 attempts per minute per admin. */
+export const backupMutationLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 10,
+  message: 'Too many backup changes. Try again in a minute.',
+  critical: true,
+})
+
+/** User lifecycle, access approval, and API-key rotation: 20 attempts per minute per admin and domain. */
+export const identitySecurityMutationLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 20,
+  message: 'Too many identity or credential changes. Try again in a minute.',
+  critical: true,
+})
+
+/** Local skill writes and recursive deletion: 20 attempts per minute per operator. */
+export const skillMutationLimiter = createKeyedRateLimiter({
+  windowMs: 60_000,
+  maxRequests: 20,
+  message: 'Too many skill changes. Try again in a minute.',
+  critical: true,
+})
+
 /** Self-registration: 5/min per IP (prevent spam registrations) */
 export const selfRegisterLimiter = createRateLimiter({
   windowMs: 60_000,

@@ -1,13 +1,39 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { createClientLogger } from '@/lib/client-logger'
+import { apiFetch, ApiError } from '@/lib/api-client'
 import Link from 'next/link'
 
 const log = createClientLogger('AgentDetailTabs')
+
+/**
+ * Surface the API's own error text for display.
+ *
+ * The old code did `if (!res.ok) throw new Error(data.error || fallback)` so the
+ * server-provided `{ error }` message reached the UI. `apiFetch` throws an
+ * `ApiError` whose `.message` is generic for 4xx (e.g. "Insufficient
+ * permissions") but carries the parsed body in `.payload`. Prefer
+ * `payload.error` to preserve the original user-facing message, then fall back
+ * to the ApiError message, then any other thrown Error message.
+ */
+function extractApiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError) {
+    const payload = err.payload
+    if (
+      payload && typeof payload === 'object' && payload !== null && 'error' in payload &&
+      typeof (payload as { error: unknown }).error === 'string'
+    ) {
+      return (payload as { error: string }).error
+    }
+    return err.message || fallback
+  }
+  if (err instanceof Error) return err.message || fallback
+  return fallback
+}
 
 interface Agent {
   id: number
@@ -101,8 +127,10 @@ export function OverviewTab({
   const [availableModels, setAvailableModels] = useState<Array<{ alias: string; description?: string }>>([])
 
   useEffect(() => {
-    fetch('/api/status?action=models')
-      .then(res => res.ok ? res.json() : null)
+    apiFetch<{ models?: Array<{ alias: string; description?: string }> }>(
+      '/api/status?action=models',
+      { redirectOnUnauthenticated: false }
+    )
       .then(data => {
         if (data?.models) setAvailableModels(data.models)
       })
@@ -114,17 +142,14 @@ export function OverviewTab({
     if (!directMessage.trim()) return
     try {
       setMessageStatus(null)
-      const response = await fetch('/api/agents/message', {
+      await apiFetch('/api/agents/message', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: messageFrom || 'system',
           to: agent.name,
           message: directMessage
         })
       })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Failed to send message')
       setDirectMessage('')
       setMessageStatus(t('messageSent'))
       setTimeout(() => setMessageStatus(null), 2000)
@@ -192,7 +217,7 @@ export function OverviewTab({
                   type="text"
                   value={formData.role}
                   onChange={(e) => setFormData((prev: any) => ({ ...prev, role: e.target.value }))}
-                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 />
               ) : (
                 <span className="text-foreground">{agent.role}</span>
@@ -205,7 +230,7 @@ export function OverviewTab({
                 <select
                   value={formData.model || ''}
                   onChange={(e) => setFormData((prev: any) => ({ ...prev, model: e.target.value }))}
-                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                 >
                   <option value="">{t('default')}</option>
                   {availableModels.map((m) => (
@@ -214,7 +239,16 @@ export function OverviewTab({
                 </select>
               ) : (
                 <span className="text-foreground font-mono text-xs">
-                  {(() => { const p = (agent as any).config?.model?.primary; const m = (agent as any).model; const v = typeof p === 'string' ? p : p?.primary; return v || (typeof m === 'string' ? m : m?.primary) || t('default') })()}
+                  {(() => {
+                    const toStr = (x: unknown): string => {
+                      if (typeof x === 'string') return x
+                      if (x && typeof x === 'object' && typeof (x as any).primary === 'string') return (x as any).primary
+                      return ''
+                    }
+                    const p = (agent as any).config?.model?.primary
+                    const m = (agent as any).model
+                    return toStr(p) || toStr(m) || t('default')
+                  })()}
                 </span>
               )}
             </div>
@@ -226,7 +260,7 @@ export function OverviewTab({
                   type="text"
                   value={formData.session_key}
                   onChange={(e) => setFormData((prev: any) => ({ ...prev, session_key: e.target.value }))}
-                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="bg-surface-1 text-foreground border border-border rounded px-2.5 py-1.5 text-sm font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   placeholder={t('sessionKeyPlaceholder')}
                 />
               ) : (
@@ -305,13 +339,13 @@ export function OverviewTab({
               type="text"
               value={messageFrom}
               onChange={(e) => setMessageFrom(e.target.value)}
-              className="bg-surface-1 text-foreground rounded px-2.5 py-1.5 text-xs border border-border focus:outline-none focus:ring-1 focus:ring-primary/50"
+              className="bg-surface-1 text-foreground rounded px-2.5 py-1.5 text-xs border border-border focus:outline-hidden focus:ring-1 focus:ring-primary/50"
               placeholder={t('from')}
             />
             <textarea
               value={directMessage}
               onChange={(e) => setDirectMessage(e.target.value)}
-              className="flex-1 min-h-[80px] bg-surface-1 text-foreground rounded px-2.5 py-2 text-sm border border-border focus:outline-none focus:ring-1 focus:ring-primary/50 resize-none"
+              className="flex-1 min-h-[80px] bg-surface-1 text-foreground rounded px-2.5 py-2 text-sm border border-border focus:outline-hidden focus:ring-1 focus:ring-primary/50 resize-none"
               placeholder={t('sendMessagePlaceholder', { name: agent.name })}
             />
             <div className="flex justify-end">
@@ -354,14 +388,12 @@ export function SoulTab({
 
   const handleLoadTemplate = async (templateName: string) => {
     try {
-      const response = await fetch(`/api/agents/${agent.name}/soul?template=${templateName}`, {
-        method: 'PATCH'
-      })
-      if (response.ok) {
-        const data = await response.json()
-        setContent(data.content)
-        setSelectedTemplate(templateName)
-      }
+      const data = await apiFetch<{ content: string }>(
+        `/api/agents/${agent.name}/soul?template=${templateName}`,
+        { method: 'PATCH' }
+      )
+      setContent(data.content)
+      setSelectedTemplate(templateName)
     } catch (error) {
       log.error('Failed to load template:', error)
     }
@@ -391,7 +423,7 @@ export function SoulTab({
             <select
               value={selectedTemplate}
               onChange={(e) => setSelectedTemplate(e.target.value)}
-              className="flex-1 bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+              className="flex-1 bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
             >
               <option value="">{t('selectTemplate')}</option>
               {templates.map(template => (
@@ -421,7 +453,7 @@ export function SoulTab({
             value={content}
             onChange={(e) => setContent(e.target.value)}
             rows={20}
-            className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
+            className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50 font-mono text-sm"
             placeholder={t('soulEditorPlaceholder')}
           />
         ) : (
@@ -554,7 +586,7 @@ export function MemoryTab({
               value={newEntry}
               onChange={(e) => setNewEntry(e.target.value)}
               rows={5}
-              className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+              className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
               placeholder={t('addMemoryEntryPlaceholder')}
             />
           </div>
@@ -563,7 +595,7 @@ export function MemoryTab({
             value={content}
             onChange={(e) => setContent(e.target.value)}
             rows={15}
-            className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
+            className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50 font-mono text-sm"
             placeholder={t('workingMemoryPlaceholder')}
           />
         ) : (
@@ -621,11 +653,8 @@ export function TasksTab({ agent }: { agent: Agent }) {
   useEffect(() => {
     const fetchTasks = async () => {
       try {
-        const response = await fetch(`/api/tasks?assigned_to=${agent.name}`)
-        if (response.ok) {
-          const data = await response.json()
-          setTasks(data.tasks || [])
-        }
+        const data = await apiFetch<{ tasks?: any[] }>(`/api/tasks?assigned_to=${agent.name}`)
+        setTasks(data.tasks || [])
       } catch (error) {
         log.error('Failed to fetch tasks:', error)
       } finally {
@@ -718,11 +747,8 @@ export function ActivityTab({ agent }: { agent: Agent }) {
   useEffect(() => {
     const fetchActivities = async () => {
       try {
-        const response = await fetch(`/api/activities?actor=${agent.name}&limit=50`)
-        if (response.ok) {
-          const data = await response.json()
-          setActivities(data.activities || [])
-        }
+        const data = await apiFetch<{ activities?: any[] }>(`/api/activities?actor=${agent.name}&limit=50`)
+        setActivities(data.activities || [])
       } catch (error) {
         log.error('Failed to fetch activities:', error)
       } finally {
@@ -865,9 +891,10 @@ export function CreateAgentModal({
   useEffect(() => {
     const loadAvailableModels = async () => {
       try {
-        const response = await fetch('/api/status?action=models')
-        if (!response.ok) return
-        const data = await response.json()
+        const data = await apiFetch<{ models?: any[] }>(
+          '/api/status?action=models',
+          { redirectOnUnauthenticated: false }
+        )
         const models = Array.isArray(data.models) ? data.models : []
         const names = models
           .map((model: any) => String(model.name || model.alias || '').trim())
@@ -933,10 +960,9 @@ export function CreateAgentModal({
       const primaryModel = formData.modelPrimary.trim() || DEFAULT_MODEL_BY_TIER[formData.modelTier]
 
       // Run animation and fetch concurrently
-      const [response] = await Promise.all([
-        fetch('/api/agents', {
+      await Promise.all([
+        apiFetch('/api/agents', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             name: formData.name,
             openclaw_id: formData.id || undefined,
@@ -960,10 +986,23 @@ export function CreateAgentModal({
         animateSteps(),
       ])
 
-      if (!response.ok) {
-        const data = await response.json()
-        const errMsg = data.error || 'Failed to create agent'
-        // Determine which step failed based on error message
+      // All done
+      for (const s of steps) s.status = 'done'
+      setProgressSteps([...steps])
+      setTimeout(() => { onCreated(); onClose() }, 1500)
+    } catch (err: any) {
+      // Extract the server-provided error message when present. apiFetch throws
+      // ApiError on non-2xx responses, carrying the parsed body in `payload`.
+      const payload = err instanceof ApiError ? err.payload : null
+      const serverError =
+        payload && typeof payload === 'object' && payload !== null && 'error' in payload &&
+        typeof (payload as { error: unknown }).error === 'string'
+          ? (payload as { error: string }).error
+          : null
+
+      if (serverError) {
+        // Server returned an error body — determine which step failed based on message
+        const errMsg = serverError
         const failIdx =
           /provision|openclaw/i.test(errMsg) ? steps.findIndex(s => s.label.includes('Provisioning')) :
           /gateway/i.test(errMsg) ? steps.findIndex(s => s.label.includes('gateway')) :
@@ -974,29 +1013,23 @@ export function CreateAgentModal({
         // Mark later steps back to pending
         for (let i = idx + 1; i < steps.length; i++) steps[i].status = 'pending'
         setProgressSteps([...steps])
-        return
+      } else {
+        // Network/unexpected error — fail first step
+        steps[0].status = 'error'
+        steps[0].error = err.message || 'Unexpected error'
+        for (let i = 1; i < steps.length; i++) steps[i].status = 'pending'
+        setProgressSteps([...steps])
       }
-
-      // All done
-      for (const s of steps) s.status = 'done'
-      setProgressSteps([...steps])
-      setTimeout(() => { onCreated(); onClose() }, 1500)
-    } catch (err: any) {
-      // Network/unexpected error — fail first step
-      steps[0].status = 'error'
-      steps[0].error = err.message || 'Unexpected error'
-      for (let i = 1; i < steps.length; i++) steps[i].status = 'pending'
-      setProgressSteps([...steps])
     } finally {
       setIsCreating(false)
     }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
       <div className="bg-card border border-border rounded-lg max-w-2xl w-full max-h-[85vh] flex flex-col">
         {/* Header */}
-        <div className="p-6 border-b border-border flex-shrink-0">
+        <div className="p-6 border-b border-border shrink-0">
           <div className="flex justify-between items-center">
             <div>
               <h3 className="text-xl font-bold text-foreground">{t('createNewAgent')}</h3>
@@ -1083,7 +1116,7 @@ export function CreateAgentModal({
                     type="text"
                     value={formData.name}
                     onChange={(e) => updateName(e.target.value)}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     placeholder={t('displayNamePlaceholder')}
                     autoFocus
                   />
@@ -1094,7 +1127,7 @@ export function CreateAgentModal({
                     type="text"
                     value={formData.id}
                     onChange={(e) => setFormData(prev => ({ ...prev, id: e.target.value }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50 font-mono text-sm"
                     placeholder="frontend-dev"
                   />
                 </div>
@@ -1107,7 +1140,7 @@ export function CreateAgentModal({
                     type="text"
                     value={formData.role}
                     onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     placeholder="builder engineer"
                   />
                 </div>
@@ -1117,7 +1150,7 @@ export function CreateAgentModal({
                     type="text"
                     value={formData.emoji}
                     onChange={(e) => setFormData(prev => ({ ...prev, emoji: e.target.value }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     placeholder="e.g. \ud83d\udee0\ufe0f"
                   />
                 </div>
@@ -1152,7 +1185,7 @@ export function CreateAgentModal({
                   value={formData.modelPrimary}
                   onChange={(e) => setFormData(prev => ({ ...prev, modelPrimary: e.target.value }))}
                   list="create-agent-model-suggestions"
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono text-sm"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50 font-mono text-sm"
                   placeholder={DEFAULT_MODEL_BY_TIER[formData.modelTier]}
                 />
                 <datalist id="create-agent-model-suggestions">
@@ -1168,7 +1201,7 @@ export function CreateAgentModal({
                   <select
                     value={formData.workspaceAccess}
                     onChange={(e) => setFormData(prev => ({ ...prev, workspaceAccess: e.target.value as any }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   >
                     <option value="rw">{t('readWrite')}</option>
                     <option value="ro">{t('readOnly')}</option>
@@ -1180,7 +1213,7 @@ export function CreateAgentModal({
                   <select
                     value={formData.sandboxMode}
                     onChange={(e) => setFormData(prev => ({ ...prev, sandboxMode: e.target.value as any }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   >
                     <option value="all">{t('sandboxAll')}</option>
                     <option value="non-main">{t('sandboxNonMain')}</option>
@@ -1191,7 +1224,7 @@ export function CreateAgentModal({
                   <select
                     value={formData.dockerNetwork}
                     onChange={(e) => setFormData(prev => ({ ...prev, dockerNetwork: e.target.value as any }))}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   >
                     <option value="none">{t('networkIsolated')}</option>
                     <option value="bridge">{t('networkBridge')}</option>
@@ -1205,7 +1238,7 @@ export function CreateAgentModal({
                   type="text"
                   value={formData.session_key}
                   onChange={(e) => setFormData(prev => ({ ...prev, session_key: e.target.value }))}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   placeholder={t('sessionKeyPlaceholder')}
                 />
               </div>
@@ -1221,7 +1254,7 @@ export function CreateAgentModal({
                   <h4 className="text-sm font-medium text-muted-foreground mb-4">{t('settingUpAgent')}</h4>
                   {progressSteps.map((ps, i) => (
                     <div key={i} className="flex items-start gap-3">
-                      <div className="w-5 h-5 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <div className="w-5 h-5 flex items-center justify-center shrink-0 mt-0.5">
                         {ps.status === 'active' && (
                           <span className="inline-block w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
                         )}
@@ -1305,7 +1338,7 @@ export function CreateAgentModal({
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-border flex gap-3 flex-shrink-0">
+        <div className="p-6 border-t border-border flex gap-3 shrink-0">
           {progressSteps ? (
             /* During/after progress */
             progressSteps.some(s => s.status === 'error') ? (
@@ -1411,9 +1444,10 @@ export function ConfigTab({
     const loadWorkspaceDocs = async () => {
       setLoadingWorkspaceDocs(true)
       try {
-        const response = await fetch(`/api/agents/${agent.id}/files`)
-        if (!response.ok) return
-        const payload = await response.json()
+        const payload = await apiFetch<{ files?: Record<string, any> }>(
+          `/api/agents/${agent.id}/files`,
+          { redirectOnUnauthenticated: false }
+        )
         const entries = Object.entries(payload?.files || {}).map(([name, value]: [string, any]) => ({
           name,
           exists: Boolean(value?.exists),
@@ -1432,9 +1466,10 @@ export function ConfigTab({
   useEffect(() => {
     const loadAvailableModels = async () => {
       try {
-        const response = await fetch('/api/status?action=models')
-        if (!response.ok) return
-        const data = await response.json()
+        const data = await apiFetch<{ models?: any[] }>(
+          '/api/status?action=models',
+          { redirectOnUnauthenticated: false }
+        )
         const models = Array.isArray(data.models) ? data.models : []
         const names = models
           .map((model: any) => String(model.name || model.alias || '').trim())
@@ -1537,20 +1572,17 @@ export function ConfigTab({
           throw new Error('Primary model is required')
         }
       }
-      const response = await fetch(`/api/agents/${agent.id}`, {
+      await apiFetch(`/api/agents/${agent.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           gateway_config: showJson ? JSON.parse(jsonInput) : config,
           write_to_gateway: true,
         }),
       })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || 'Failed to save')
       setEditing(false)
       onSave()
     } catch (err: any) {
-      setError(err.message)
+      setError(extractApiErrorMessage(err, 'Failed to save'))
     } finally {
       setSaving(false)
     }
@@ -1572,7 +1604,18 @@ export function ConfigTab({
   const toolAllow = Array.isArray(tools.allow) ? tools.allow : []
   const toolDeny = Array.isArray(tools.deny) ? tools.deny : []
   const toolRawPreview = typeof tools.raw === 'string' ? tools.raw : ''
-  const modelPrimary = model.primary || ''
+  // Defense: agent config may have been written with model.primary as an
+  // object (some templates / migrations end up with `{primary: "name"}`
+  // wrapped twice). Always coerce to a renderable string so this tab never
+  // crashes with React error #31 ("objects are not valid as a React child").
+  const modelPrimaryRaw: unknown = (model as any)?.primary
+  const modelPrimary = typeof modelPrimaryRaw === 'string'
+    ? modelPrimaryRaw
+    : (modelPrimaryRaw && typeof modelPrimaryRaw === 'object'
+        ? (typeof (modelPrimaryRaw as any).primary === 'string'
+            ? (modelPrimaryRaw as any).primary
+            : JSON.stringify(modelPrimaryRaw))
+        : '')
   const modelFallbacks = Array.isArray(model.fallbacks) ? model.fallbacks : []
 
   return (
@@ -1619,7 +1662,7 @@ export function ConfigTab({
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               rows={20}
-              className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+              className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-hidden focus:ring-1 focus:ring-primary/50"
             />
           ) : (
             <pre className="bg-surface-1/30 rounded p-4 text-xs text-foreground/90 overflow-auto max-h-96 font-mono">
@@ -1642,7 +1685,7 @@ export function ConfigTab({
                     onChange={(e) => updateModelConfig((current) => ({ ...current, primary: e.target.value }))}
                     list="agent-model-suggestions"
                     placeholder="anthropic/claude-sonnet-4-20250514"
-                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   />
                   <datalist id="agent-model-suggestions">
                     {availableModels.map((name) => (
@@ -1663,7 +1706,7 @@ export function ConfigTab({
                             updateModelConfig((current) => ({ ...current, fallbacks: next }))
                           }}
                           list="agent-model-suggestions"
-                          className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                          className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                         />
                         <Button
                           onClick={() => {
@@ -1683,7 +1726,7 @@ export function ConfigTab({
                         onChange={(e) => setNewFallbackModel(e.target.value)}
                         list="agent-model-suggestions"
                         placeholder={t('addFallbackModel')}
-                        className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+                        className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                       />
                       <Button
                         onClick={addFallbackModel}
@@ -1724,7 +1767,7 @@ export function ConfigTab({
                     <input
                       value={identityEmoji}
                       onChange={(e) => updateIdentityField('emoji', e.target.value)}
-                      className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm text-center focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                       placeholder="🤖"
                     />
                   </div>
@@ -1733,7 +1776,7 @@ export function ConfigTab({
                     <input
                       value={identity.name || ''}
                       onChange={(e) => updateIdentityField('name', e.target.value)}
-                      className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                       placeholder="Agent name"
                     />
                   </div>
@@ -1742,7 +1785,7 @@ export function ConfigTab({
                     <input
                       value={identity.theme || ''}
                       onChange={(e) => updateIdentityField('theme', e.target.value)}
-                      className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                       placeholder="e.g. backend engineer"
                     />
                   </div>
@@ -1753,7 +1796,7 @@ export function ConfigTab({
                     value={identity.content || ''}
                     onChange={(e) => updateIdentityField('content', e.target.value)}
                     rows={4}
-                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     placeholder="Describe the agent's identity and personality..."
                   />
                 </div>
@@ -1801,7 +1844,7 @@ export function ConfigTab({
                   rows={6}
                   value={identityMdInput}
                   onChange={(e) => setIdentityMdInput(e.target.value)}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   placeholder="identity.md content..."
                 />
               ) : (
@@ -1825,7 +1868,7 @@ export function ConfigTab({
                   rows={8}
                   value={agentMdInput}
                   onChange={(e) => setAgentMdInput(e.target.value)}
-                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   placeholder="agent.md content..."
                 />
               ) : (
@@ -1871,7 +1914,7 @@ export function ConfigTab({
                   <select
                     value={sandbox.mode || ''}
                     onChange={(e) => updateSandboxField('mode', e.target.value)}
-                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   >
                     <option value="">{t('notConfigured')}</option>
                     <option value="all">{t('all')}</option>
@@ -1884,7 +1927,7 @@ export function ConfigTab({
                   <select
                     value={sandbox.workspaceAccess || ''}
                     onChange={(e) => updateSandboxField('workspaceAccess', e.target.value)}
-                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                   >
                     <option value="">{t('notConfigured')}</option>
                     <option value="rw">{t('readWrite')}</option>
@@ -1897,7 +1940,7 @@ export function ConfigTab({
                   <input
                     value={sandbox.network || ''}
                     onChange={(e) => updateSandboxField('network', e.target.value)}
-                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                    className="w-full bg-surface-1 text-foreground rounded px-3 py-2 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     placeholder={t('none')}
                   />
                 </div>
@@ -1932,7 +1975,7 @@ export function ConfigTab({
                       onChange={(e) => setNewAllowTool(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTool('allow', newAllowTool); setNewAllowTool('') } }}
                       placeholder={t('addAllowedTool')}
-                      className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     />
                     <Button
                       onClick={() => { addTool('allow', newAllowTool); setNewAllowTool('') }}
@@ -1960,7 +2003,7 @@ export function ConfigTab({
                       onChange={(e) => setNewDenyTool(e.target.value)}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addTool('deny', newDenyTool); setNewDenyTool('') } }}
                       placeholder={t('addDeniedTool')}
-                      className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      className="flex-1 bg-surface-1 text-foreground rounded px-3 py-2 text-xs focus:outline-hidden focus:ring-1 focus:ring-primary/50"
                     />
                     <Button
                       onClick={() => { addTool('deny', newDenyTool); setNewDenyTool('') }}
@@ -2037,7 +2080,7 @@ export function ConfigTab({
                   <input
                     type="text"
                     placeholder={t('addSubAgentPlaceholder')}
-                    className="flex-1 px-2 py-1 text-xs border border-border rounded bg-background text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    className="flex-1 px-2 py-1 text-xs border border-border rounded bg-background text-foreground placeholder-muted-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         const val = (e.target as HTMLInputElement).value.trim()
@@ -2082,7 +2125,7 @@ export function ConfigTab({
                         subagents: { ...(prev.subagents || {}), model: e.target.value || undefined }
                       }))
                     }}
-                    className="w-full mt-1 px-2 py-1 text-xs border border-border rounded bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    className="w-full mt-1 px-2 py-1 text-xs border border-border rounded bg-background text-foreground focus:outline-hidden focus:ring-2 focus:ring-primary/50"
                   >
                     <option value="">{t('defaultInheritFromAgent')}</option>
                     {availableModels.map((m) => (
@@ -2101,7 +2144,12 @@ export function ConfigTab({
                       ))}
                     </div>
                     {subagents.model && (
-                      <div className="text-xs text-muted-foreground mt-1">{t('modelLabel')}: {subagents.model}</div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {t('modelLabel')}:{' '}
+                        {typeof subagents.model === 'string'
+                          ? subagents.model
+                          : (subagents.model?.primary || JSON.stringify(subagents.model))}
+                      </div>
                     )}
                   </>
                 ) : (
@@ -2165,16 +2213,13 @@ export function FilesTab({ agent }: { agent: Agent }) {
   const [saving, setSaving] = useState(false)
   const [workspace, setWorkspace] = useState<string | null>(null)
 
-  const loadFiles = async () => {
+  const loadFiles = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const response = await fetch(`/api/agents/${agent.id}/files`)
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to load files')
-      }
-      const data = await response.json()
+      const data = await apiFetch<{ workspace?: string; files?: Record<string, any> }>(
+        `/api/agents/${agent.id}/files`
+      )
       setWorkspace(data.workspace || null)
       const entries = Object.entries(data.files || {}).map(([name, value]: [string, any]) => ({
         name,
@@ -2183,13 +2228,13 @@ export function FilesTab({ agent }: { agent: Agent }) {
       }))
       setFiles(entries)
     } catch (err: any) {
-      setError(err.message)
+      setError(extractApiErrorMessage(err, 'Failed to load files'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [agent.id])
 
-  useEffect(() => { loadFiles() }, [agent.id])
+  useEffect(() => { loadFiles() }, [loadFiles])
 
   const activeEntry = activeFile ? files.find(f => f.name === activeFile) : null
   const baseContent = activeEntry?.content || ''
@@ -2205,20 +2250,15 @@ export function FilesTab({ agent }: { agent: Agent }) {
     if (!activeFile) return
     setSaving(true)
     try {
-      const response = await fetch(`/api/agents/${agent.id}/files`, {
+      await apiFetch(`/api/agents/${agent.id}/files`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file: activeFile, content: draft }),
       })
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to save file')
-      }
       setFiles(prev => prev.map(f =>
         f.name === activeFile ? { ...f, exists: true, content: draft } : f
       ))
     } catch (err: any) {
-      setError(err.message)
+      setError(extractApiErrorMessage(err, 'Failed to save file'))
     } finally {
       setSaving(false)
     }
@@ -2313,7 +2353,7 @@ export function FilesTab({ agent }: { agent: Agent }) {
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 rows={20}
-                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 resize-y"
+                className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 font-mono text-xs focus:outline-hidden focus:ring-1 focus:ring-primary/50 resize-y"
                 placeholder={activeEntry.exists ? '' : t('fileNotExistYet')}
               />
             </div>
@@ -2353,9 +2393,8 @@ export function ToolsTab({ agent }: { agent: Agent }) {
     setError(null)
     setSuccess(false)
     try {
-      const response = await fetch(`/api/agents/${agent.id}`, {
+      await apiFetch(`/api/agents/${agent.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           gateway_config: {
             tools: {
@@ -2368,14 +2407,10 @@ export function ToolsTab({ agent }: { agent: Agent }) {
           write_to_gateway: true,
         }),
       })
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to save tools')
-      }
       setSuccess(true)
       setTimeout(() => setSuccess(false), 2000)
     } catch (err: any) {
-      setError(err.message)
+      setError(extractApiErrorMessage(err, 'Failed to save tools'))
     } finally {
       setSaving(false)
     }
@@ -2438,7 +2473,7 @@ export function ToolsTab({ agent }: { agent: Agent }) {
               }
             }}
             placeholder={t('addToolToAllowList')}
-            className="flex-1 bg-surface-1 text-foreground rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+            className="flex-1 bg-surface-1 text-foreground rounded px-3 py-1.5 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
           />
           <Button onClick={() => { addToList(allowList, setAllowList, newAllow); setNewAllow('') }} variant="secondary" size="xs">
             {t('add')}
@@ -2485,7 +2520,7 @@ export function ToolsTab({ agent }: { agent: Agent }) {
               }
             }}
             placeholder={t('addToolToDenyList')}
-            className="flex-1 bg-surface-1 text-foreground rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+            className="flex-1 bg-surface-1 text-foreground rounded px-3 py-1.5 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
           />
           <Button onClick={() => { addToList(denyList, setDenyList, newDeny); setNewDeny('') }} variant="secondary" size="xs">
             {t('add')}
@@ -2523,9 +2558,7 @@ export function ChannelsTab({ agent }: { agent: Agent }) {
     setLoading(true)
     setError(null)
     try {
-      const response = await fetch('/api/channels')
-      if (!response.ok) throw new Error('Failed to load channels')
-      const data = await response.json()
+      const data = await apiFetch<any>('/api/channels')
 
       const snapshot = data.channels || data
       const channelOrder: string[] = snapshot.channelOrder || []
@@ -2549,7 +2582,9 @@ export function ChannelsTab({ agent }: { agent: Agent }) {
 
       setChannels(entries)
     } catch (err: any) {
-      setError(err.message)
+      // Preserve the original generic failure message (the old code threw a
+      // constant Error on any non-ok response and surfaced err.message).
+      setError(extractApiErrorMessage(err, 'Failed to load channels'))
     } finally {
       setLoading(false)
     }
@@ -2647,12 +2682,11 @@ export function CronTab({ agent }: { agent: Agent }) {
     setLoading(true)
     setError(null)
     try {
-      const response = await fetch('/api/cron?action=list')
-      if (!response.ok) throw new Error('Failed to load cron jobs')
-      const data = await response.json()
+      const data = await apiFetch<{ jobs?: AgentCronJob[] }>('/api/cron?action=list')
       setAllJobs(data.jobs || [])
     } catch (err: any) {
-      setError(err.message)
+      // Preserve the original generic failure message.
+      setError(extractApiErrorMessage(err, 'Failed to load cron jobs'))
     } finally {
       setLoading(false)
     }
@@ -2767,8 +2801,17 @@ export function ModelsTab({ agent }: { agent: Agent }) {
   const t = useTranslations('agentDetail')
   const agentConfig = (agent as any).config || {}
   const modelCfg = agentConfig.model || {}
-  const modelPrimary = typeof modelCfg === 'string' ? modelCfg : (modelCfg.primary || '')
-  const modelFallbacks: string[] = Array.isArray(modelCfg.fallbacks) ? modelCfg.fallbacks : []
+  // Same defensive coercion as ConfigTab: `model.primary` may be an object
+  // in some legacy/imported configs. Always end up with a string.
+  const _primaryRaw: unknown = typeof modelCfg === 'string' ? modelCfg : (modelCfg as any)?.primary
+  const modelPrimary = typeof _primaryRaw === 'string'
+    ? _primaryRaw
+    : (_primaryRaw && typeof _primaryRaw === 'object'
+        ? (typeof (_primaryRaw as any).primary === 'string'
+            ? (_primaryRaw as any).primary
+            : JSON.stringify(_primaryRaw))
+        : '')
+  const modelFallbacks: string[] = Array.isArray((modelCfg as any).fallbacks) ? (modelCfg as any).fallbacks : []
 
   const [primary, setPrimary] = useState(modelPrimary)
   const [fallbacks, setFallbacks] = useState<string[]>(modelFallbacks)
@@ -2779,8 +2822,10 @@ export function ModelsTab({ agent }: { agent: Agent }) {
   const [availableModels, setAvailableModels] = useState<Array<{ alias: string }>>([])
 
   useEffect(() => {
-    fetch('/api/status?action=models')
-      .then(res => res.ok ? res.json() : null)
+    apiFetch<{ models?: Array<{ alias: string }> }>(
+      '/api/status?action=models',
+      { redirectOnUnauthenticated: false }
+    )
       .then(data => {
         if (data?.models) setAvailableModels(data.models)
       })
@@ -2794,9 +2839,8 @@ export function ModelsTab({ agent }: { agent: Agent }) {
     setError(null)
     setSuccess(false)
     try {
-      const response = await fetch(`/api/agents/${agent.id}`, {
+      await apiFetch(`/api/agents/${agent.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           gateway_config: {
             model: {
@@ -2807,14 +2851,10 @@ export function ModelsTab({ agent }: { agent: Agent }) {
           write_to_gateway: true,
         }),
       })
-      if (!response.ok) {
-        const data = await response.json()
-        throw new Error(data.error || 'Failed to save model config')
-      }
       setSuccess(true)
       setTimeout(() => setSuccess(false), 2000)
     } catch (err: any) {
-      setError(err.message)
+      setError(extractApiErrorMessage(err, 'Failed to save model config'))
     } finally {
       setSaving(false)
     }
@@ -2867,7 +2907,7 @@ export function ModelsTab({ agent }: { agent: Agent }) {
         <select
           value={primary}
           onChange={(e) => setPrimary(e.target.value)}
-          className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+          className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
         >
           <option value="">{t('default')}</option>
           {availableModels.map(m => (
@@ -2934,7 +2974,7 @@ export function ModelsTab({ agent }: { agent: Agent }) {
             }}
             list="model-fallback-suggestions"
             placeholder={t('addFallbackModel')}
-            className="flex-1 bg-surface-1 text-foreground rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-primary/50"
+            className="flex-1 bg-surface-1 text-foreground rounded px-3 py-1.5 text-xs font-mono focus:outline-hidden focus:ring-1 focus:ring-primary/50"
           />
           <datalist id="model-fallback-suggestions">
             {availableModels.map(m => (
