@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { runOpenClaw } from '@/lib/command'
+import { readConfiguredUpdateChannel } from '@/lib/openclaw-update-channel'
 import { getDatabase } from '@/lib/db'
 import { logger } from '@/lib/logger'
 
@@ -24,7 +25,10 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await runOpenClaw(['update', '--channel', 'stable'], {
+    // Honour the channel persisted in openclaw.json. Hardcoding a channel here
+    // would both install from the wrong line and silently re-persist it.
+    const channel = readConfiguredUpdateChannel()
+    const result = await runOpenClaw(['update', '--channel', channel], {
       timeoutMs: 5 * 60 * 1000,
     })
 
@@ -44,12 +48,13 @@ export async function POST(request: Request) {
       ).run(
         'openclaw.update',
         auth.user.username,
-        JSON.stringify({ previousVersion: installedBefore, newVersion: installedAfter })
+        JSON.stringify({ previousVersion: installedBefore, newVersion: installedAfter, channel })
       )
     } catch { /* non-critical */ }
 
     return NextResponse.json({
       success: true,
+      channel,
       previousVersion: installedBefore,
       newVersion: installedAfter,
       output: result.stdout,
