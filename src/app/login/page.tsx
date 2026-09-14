@@ -62,12 +62,27 @@ function GoogleIcon({ className }: { className?: string }) {
   )
 }
 
-const GATEWAY_URL_PRESETS = [
+const LOOPBACK_GATEWAY_PRESETS = [
   'ws://127.0.0.1:18789',
   'wss://127.0.0.1:18789',
   'ws://localhost:18789',
   'wss://localhost:18789',
 ]
+
+// Deployment-configured gateway URL, inlined by Next at build time.
+// The loopback presets resolve to the *viewer's* machine, so they are unreachable
+// for anyone browsing a remote Mission Control. When a public URL is configured it
+// leads the preset list and becomes the default selection.
+const CONFIGURED_GATEWAY_URL = (process.env.NEXT_PUBLIC_GATEWAY_URL || '').trim()
+
+const HAS_REMOTE_GATEWAY_URL =
+  CONFIGURED_GATEWAY_URL !== '' && !LOOPBACK_GATEWAY_PRESETS.includes(CONFIGURED_GATEWAY_URL)
+
+const GATEWAY_URL_PRESETS = HAS_REMOTE_GATEWAY_URL
+  ? [CONFIGURED_GATEWAY_URL, ...LOOPBACK_GATEWAY_PRESETS]
+  : LOOPBACK_GATEWAY_PRESETS
+
+const DEFAULT_GATEWAY_URL = GATEWAY_URL_PRESETS[0]
 
 const GATEWAY_CONNECTION_TIMEOUT_MS = 5000
 
@@ -88,7 +103,7 @@ export default function LoginPage() {
 
   // Advanced settings state
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [gatewayPreset, setGatewayPreset] = useState<string>('ws://127.0.0.1:18789')
+  const [gatewayPreset, setGatewayPreset] = useState<string>(DEFAULT_GATEWAY_URL)
   const [gatewayCustom, setGatewayCustom] = useState('')
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle')
   const [connectionError, setConnectionError] = useState('')
@@ -96,13 +111,22 @@ export default function LoginPage() {
   // Initialize gateway URL from localStorage on mount
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_GATEWAY_URL)
-    if (saved) {
-      if (GATEWAY_URL_PRESETS.includes(saved)) {
-        setGatewayPreset(saved)
-      } else {
-        setGatewayPreset('custom')
-        setGatewayCustom(saved)
-      }
+    if (!saved) return
+
+    // Migrate browsers still holding a loopback URL saved before this deployment
+    // had a public gateway configured. The dashboard connects to whatever is stored
+    // here, so a stale 127.0.0.1 leaves it permanently offline.
+    if (HAS_REMOTE_GATEWAY_URL && LOOPBACK_GATEWAY_PRESETS.includes(saved)) {
+      localStorage.setItem(STORAGE_GATEWAY_URL, CONFIGURED_GATEWAY_URL)
+      setGatewayPreset(CONFIGURED_GATEWAY_URL)
+      return
+    }
+
+    if (GATEWAY_URL_PRESETS.includes(saved)) {
+      setGatewayPreset(saved)
+    } else {
+      setGatewayPreset('custom')
+      setGatewayCustom(saved)
     }
   }, [])
 
