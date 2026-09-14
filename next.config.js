@@ -43,6 +43,10 @@ const nextConfig = {
   turbopack: {
     root: __dirname,
   },
+  // `ws` must stay a runtime require, not be bundled: bundling breaks its optional
+  // `bufferutil` fallback (`mask is not a function` on every outbound frame), which
+  // kills the server-side gateway RPC client (node.list, sessions, chat forward).
+  serverExternalPackages: ['ws'],
   // Transpile ESM-only packages so they resolve correctly in all environments
   transpilePackages: ['react-markdown', 'remark-gfm'],
   

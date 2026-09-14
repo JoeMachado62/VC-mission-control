@@ -160,6 +160,9 @@ function readWorkspaceFile(workspace: string | undefined, filename: string): str
       closeSync(descriptor)
     }
   } catch (err) {
+    // Optional workspace files (identity.md, SOUL.md, ...) are routinely absent;
+    // only a real read failure deserves a warning.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null
     logger.warn({ err, workspace, filename }, 'Failed to read workspace file')
   }
   return null
